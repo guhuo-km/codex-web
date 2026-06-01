@@ -16,6 +16,7 @@ const DEFAULT_HISTORY_CACHE_TURNS = 30;
 const MIN_HISTORY_CACHE_TURNS = 20;
 const MAX_HISTORY_CACHE_TURNS = 200;
 const SAVED_PASSWORD_KEY = "codex-web.savedPassword";
+const ACTIVE_SELECTION_KEY = "codex-web.activeSelection";
 const PENDING_THREAD_SHELL_TTL_MS = 30_000;
 
 interface BridgeEventLike {
@@ -41,8 +42,8 @@ interface PendingThreadShell {
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<UiWorkspace[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [activeCwd, setActiveCwd] = useState<string | undefined>();
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(() => readStoredActiveSelection().threadId ?? null);
+  const [activeCwd, setActiveCwd] = useState<string | undefined>(() => readStoredActiveSelection().cwd);
   const [colorMode, setColorMode] = useState<"light" | "dark">("light");
   const [themes, setThemes] = useState<ThemeRecord[]>([]);
   const [activeThemeId, setActiveThemeId] = useState("default");
@@ -91,6 +92,7 @@ export function App() {
   const authDecisionResolvedRef = useRef(false);
   const manualLoginWithoutRememberRef = useRef(false);
   const pendingThreadShellsRef = useRef<Map<string, PendingThreadShell>>(new Map());
+  const restoredThreadLoadAttemptRef = useRef<string | null>(null);
   const authReady = authStatus.loaded && (!authStatus.enabled || authStatus.authenticated);
 
   useEffect(() => {
@@ -116,6 +118,11 @@ export function App() {
   useEffect(() => {
     pendingCompactMessagesRef.current = pendingCompactMessages;
   }, [pendingCompactMessages]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    writeStoredActiveSelection(activeCwd, activeThreadId);
+  }, [authReady, activeCwd, activeThreadId]);
 
   useEffect(() => {
     void refreshAuthStatus();
@@ -256,6 +263,16 @@ export function App() {
     return () => ws.close();
   }, [authReady]);
 
+  useEffect(() => {
+    if (!authReady || !activeThreadId || !activeCwd) return;
+    const target = activeThread(workspaces, activeThreadId);
+    if (!target || target.isDraft || target.messages.length > 0 || target.isLoadingHistory) return;
+    const restoreKey = `${activeCwd}\n${activeThreadId}`;
+    if (restoredThreadLoadAttemptRef.current === restoreKey) return;
+    restoredThreadLoadAttemptRef.current = restoreKey;
+    void selectThread(activeThreadId, target.cwd ?? activeCwd, { workspaces });
+  }, [authReady, activeCwd, activeThreadId, workspaces]);
+
   async function refreshProjectsAndThreads() {
     try {
       const [projects, threadsResult] = await Promise.all([
@@ -265,9 +282,10 @@ export function App() {
       const serverThreads = Array.isArray(threadsResult) ? threadsResult : threadsResult.data ?? [];
       const threads = withPendingThreadShells(serverThreads);
       const merged = mergeThreadsIntoProjects(projects, threads, workspacesRef.current);
+      const selectedThread = activeThread(merged, activeThreadIdRef.current);
       setWorkspaceLoadError(null);
       setWorkspaces(merged);
-      setActiveCwd((current) => merged.some((workspace) => workspace.cwd === current) ? current : merged[0]?.cwd);
+      setActiveCwd((current) => selectedThread?.cwd ?? (merged.some((workspace) => workspace.cwd === current) ? current : merged[0]?.cwd));
       setActiveThreadId((current) => current && activeThread(merged, current) ? current : null);
       return merged;
     } catch (error) {
@@ -353,6 +371,23 @@ export function App() {
     } catch (error) {
       console.error("Failed to load approvals", error);
     }
+  }
+
+  async function refreshCurrentView() {
+    const threadId = activeThreadIdRef.current;
+    const currentThread = threadId ? activeThread(workspacesRef.current, threadId) : undefined;
+    const cwd = currentThread?.cwd ?? activeCwd;
+    const [merged] = await Promise.all([
+      refreshProjectsAndThreads(),
+      refreshStatus(),
+      refreshCapabilities(),
+      refreshApprovals()
+    ]);
+    if (!threadId) return;
+    const refreshedThread = activeThread(merged, threadId);
+    const refreshedCwd = refreshedThread?.cwd ?? cwd;
+    if (!refreshedThread || !refreshedCwd) return;
+    await selectThread(threadId, refreshedCwd, { force: true, workspaces: merged });
   }
 
   function withPendingThreadShells(serverThreads: ThreadSummary[]): ThreadSummary[] {
@@ -1697,11 +1732,7 @@ export function App() {
           status={status}
           tasks={tasks}
           capabilities={capabilities}
-          onRefresh={() => {
-            void refreshStatus();
-            void refreshProjectsAndThreads();
-            void refreshCapabilities();
-          }}
+          onRefresh={() => void refreshCurrentView()}
           onRefreshCapabilities={() => void refreshCapabilities()}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
@@ -2407,6 +2438,28 @@ function sameJson(left: unknown, right: unknown): boolean {
 function readSavedPassword(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(SAVED_PASSWORD_KEY);
+}
+
+function readStoredActiveSelection(): { cwd?: string; threadId?: string } {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(ACTIVE_SELECTION_KEY) ?? "null") as { cwd?: unknown; threadId?: unknown } | null;
+    return {
+      cwd: typeof parsed?.cwd === "string" && parsed.cwd ? parsed.cwd : undefined,
+      threadId: typeof parsed?.threadId === "string" && parsed.threadId ? parsed.threadId : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredActiveSelection(cwd: string | undefined, threadId: string | null) {
+  if (typeof window === "undefined") return;
+  if (!cwd && !threadId) {
+    window.localStorage.removeItem(ACTIVE_SELECTION_KEY);
+    return;
+  }
+  window.localStorage.setItem(ACTIVE_SELECTION_KEY, JSON.stringify({ cwd, threadId: threadId ?? undefined }));
 }
 
 function isWorkMode(value: unknown): value is WorkMode {
