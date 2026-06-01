@@ -1,5 +1,56 @@
 import type { UiMessage } from "./types.js";
 
+export function appendOptimisticTurnMessages(
+  messages: UiMessage[],
+  input: { turnId: string; text: string; attachments?: UiMessage["attachments"]; startedAt?: number }
+): UiMessage[] {
+  const startedAt = input.startedAt ?? Date.now();
+  const text = input.text.trim();
+  const attachments = input.attachments ?? [];
+  const userMessage: UiMessage = {
+    id: `user-turn-${input.turnId}`,
+    role: "user",
+    turnId: input.turnId,
+    text,
+    createdAt: startedAt,
+    attachments,
+    images: attachments.filter((attachment) => attachment.kind === "image")
+  };
+  const assistantMessage: UiMessage = {
+    id: `assistant-turn-${input.turnId}`,
+    role: "assistant",
+    turnId: input.turnId,
+    text: "",
+    createdAt: startedAt,
+    turnStartedAt: startedAt,
+    isStreaming: true
+  };
+  return upsertMessagesById(messages, [userMessage, assistantMessage]);
+}
+
+export function mergeLoadedMessagesWithCurrent(loadedMessages: UiMessage[], currentMessages: UiMessage[]): UiMessage[] {
+  if (!currentMessages.length) return loadedMessages;
+  const loadedIds = new Set(loadedMessages.map((message) => message.id));
+  const loadedTurns = new Set(loadedMessages.map((message) => message.turnId).filter(Boolean));
+  const currentById = new Map(currentMessages.map((message) => [message.id, message]));
+  const merged = loadedMessages.map((message) => {
+    const current = currentById.get(message.id);
+    if (!current) return message;
+    if (current.isStreaming && message.role === "assistant") {
+      return { ...message, isStreaming: true, turnStartedAt: current.turnStartedAt ?? message.turnStartedAt };
+    }
+    return message;
+  });
+
+  for (const current of currentMessages) {
+    if (loadedIds.has(current.id)) continue;
+    if (current.turnId && loadedTurns.has(current.turnId)) continue;
+    if (isLocalPendingMessage(current)) merged.push(current);
+  }
+
+  return merged;
+}
+
 export function upsertContextCompactionMarkerMessage(messages: UiMessage[], marker: UiMessage): UiMessage[] {
   const existingIndex = messages.findIndex((message) => (
     message.systemMarker === "contextCompaction" &&
@@ -19,6 +70,22 @@ export function upsertContextCompactionMarkerMessage(messages: UiMessage[], mark
     nextMarker,
     ...baseMessages.slice(insertionIndex)
   ];
+}
+
+function upsertMessagesById(messages: UiMessage[], nextMessages: UiMessage[]): UiMessage[] {
+  const byId = new Map(nextMessages.map((message) => [message.id, message]));
+  const next = messages.map((message) => byId.get(message.id) ?? message);
+  for (const message of nextMessages) {
+    if (!messages.some((current) => current.id === message.id)) next.push(message);
+  }
+  return next;
+}
+
+function isLocalPendingMessage(message: UiMessage): boolean {
+  if (message.id.startsWith("user-turn-")) return true;
+  if (message.id.startsWith("assistant-turn-") && message.isStreaming) return true;
+  if (message.id.startsWith("pending-assistant-")) return true;
+  return false;
 }
 
 function contextCompactionMarkerIndex(messages: UiMessage[], marker: UiMessage): number {

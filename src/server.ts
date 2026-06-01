@@ -16,6 +16,7 @@ import type { ProjectStore } from "./projects/project-store.js";
 import type { ThemeStore } from "./themes/theme-store.js";
 import type { ThreadMetadataStore } from "./threads/thread-metadata-store.js";
 import type { UserPreferencesStore } from "./preferences/user-preferences-store.js";
+import { RuntimeDiagnostics } from "./runtime/diagnostics.js";
 
 export interface CreateAppServerOptions {
   config: AppConfig;
@@ -26,6 +27,7 @@ export interface CreateAppServerOptions {
   threadMetadata: ThreadMetadataStore;
   preferences: UserPreferencesStore;
   status: () => unknown;
+  diagnostics?: RuntimeDiagnostics;
 }
 
 export function createAppServer(options: CreateAppServerOptions): {
@@ -34,6 +36,8 @@ export function createAppServer(options: CreateAppServerOptions): {
 } {
   assertCoreRouteDeps(options);
   const app = express();
+  const diagnostics = options.diagnostics ?? new RuntimeDiagnostics(options.events);
+  app.use(diagnostics.middleware());
   app.use(express.json({ limit: "5mb" }));
   const pinoHttp = (pinoHttpModule as unknown as { default?: (options: unknown) => express.RequestHandler }).default
     ?? (pinoHttpModule as unknown as (options: unknown) => express.RequestHandler);
@@ -45,7 +49,7 @@ export function createAppServer(options: CreateAppServerOptions): {
   notifications.attach(options.events);
   app.use(auth.router());
   app.use(auth.middleware());
-  app.use(createRoutes({ ...options, notifications, titleGeneration }));
+  app.use(createRoutes({ ...options, notifications, titleGeneration, diagnostics }));
   const webRoot = resolveWebRoot();
   if (webRoot) {
     app.use(express.static(webRoot));
@@ -61,7 +65,7 @@ export function createAppServer(options: CreateAppServerOptions): {
   return {
     app,
     attachWebSocket: (server) => {
-      attachBrowserWebSocket(server, options.events, options.bridge, auth);
+      attachBrowserWebSocket(server, options.events, options.bridge, { auth, diagnostics });
     }
   };
 }

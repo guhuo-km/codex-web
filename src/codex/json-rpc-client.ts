@@ -116,8 +116,8 @@ export class CodexJsonRpcClient {
       id,
       params: {
         clientInfo: {
-          name: this.options.clientName ?? "codex_web",
-          title: this.options.clientTitle ?? "codex-web",
+          name: this.options.clientName ?? "codex_web_bridge",
+          title: this.options.clientTitle ?? "Codex Web Bridge",
           version: this.options.clientVersion ?? "0.1.0"
         },
         capabilities: {

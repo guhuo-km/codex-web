@@ -1,15 +1,18 @@
 {
-  "name": "codex-web",
+  "name": "codex-web-bridge",
   "version": "0.1.0",
   "private": true,
-  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "start": "node dist/src/index.js",
     "build": "tsc -p tsconfig.json && vite build --config web/vite.config.ts",
-    "build:web": "vite build --config web/vite.config.ts"
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:restart": "powershell -ExecutionPolicy Bypass -File scripts/build-and-restart-dev.ps1",
+    "smoke:codex": "tsx scripts/smoke-live-codex.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

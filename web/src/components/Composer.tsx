@@ -98,6 +98,7 @@ export function Composer({
   onToggleSkill,
   onTogglePlugin
 }: ComposerProps) {
+  const [draftText, setDraftText] = useState(text);
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [workModeOpen, setWorkModeOpen] = useState(false);
@@ -110,9 +111,9 @@ export function Composer({
   const textareaId = useId();
   const fileRef = useRef<HTMLInputElement | null>(null);
   const expandedTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const hasText = text.trim().length > 0;
-  const slashQuery = text.startsWith("/") ? text.slice(1).trim().toLowerCase() : "";
-  const showSlashCommands = text.startsWith("/") && !commandMode && !isGenerating;
+  const hasText = draftText.trim().length > 0;
+  const slashQuery = draftText.startsWith("/") ? draftText.slice(1).trim().toLowerCase() : "";
+  const showSlashCommands = draftText.startsWith("/") && !commandMode && !isGenerating;
   const filteredSlashCommands = slashCommands.filter((command) => command.id.includes(slashQuery) || command.label.slice(1).includes(slashQuery));
   const canStop = Boolean(onStop) && isGenerating && !disabled && !hasText && attachments.length === 0;
   const canSend = (hasText || (!isGenerating && attachments.length > 0)) && !disabled && !isSubmitting;
@@ -146,6 +147,10 @@ export function Composer({
   useEffect(() => {
     if (editorExpanded) expandedTextareaRef.current?.focus();
   }, [editorExpanded]);
+
+  useEffect(() => {
+    setDraftText(text);
+  }, [text]);
 
   async function uploadFiles(files: FileList | File[] | null) {
     if (!files) return;
@@ -207,10 +212,13 @@ export function Composer({
     setIsSubmitting(true);
     try {
       await submitComposerMessage({
-        text,
+        text: draftText,
         attachments,
         onSend,
-        onTextChange,
+        onTextChange: (nextText) => {
+          setDraftText(nextText);
+          onTextChange(nextText);
+        },
         onAttachmentsChange,
         onError: (error) => console.error("Failed to send message", error)
       });
@@ -221,16 +229,19 @@ export function Composer({
 
   function selectSlashCommand(commandId: (typeof slashCommands)[number]["id"]) {
     if (commandId === "compact") {
+      setDraftText("");
       onTextChange("");
       onRunCompact();
       return;
     }
     if (commandId === "init") {
+      setDraftText("");
       onTextChange("");
       onRunInit();
       return;
     }
     onCommandModeChange(commandId);
+    setDraftText("");
     onTextChange("");
   }
 
@@ -311,10 +322,10 @@ export function Composer({
             id={textareaId}
             ref={editorExpanded ? expandedTextareaRef : undefined}
             className={editorExpanded ? "composer-expanded-textarea" : ""}
-            value={text}
+            value={draftText}
             disabled={disabled}
             placeholder={disabled ? "请先选择项目" : commandMode === "goal" ? "输入当前目标..." : isDraft ? "请告诉 Codex 需要构建、修改或检查什么..." : "输入消息..."}
-            onChange={(event) => onTextChange(event.target.value)}
+            onChange={(event) => setDraftText(event.target.value)}
             onPaste={handlePaste}
             onKeyDown={(event) => {
               if (event.key === "Escape" && editorExpanded) {
@@ -495,7 +506,7 @@ export function Composer({
   );
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.key === "Backspace" || event.key === "Delete") && commandMode && !text) {
+    if ((event.key === "Backspace" || event.key === "Delete") && commandMode && !draftText) {
       event.preventDefault();
       onCommandModeChange(null);
       return;
@@ -506,6 +517,8 @@ export function Composer({
     }
   }
 }
+
+export const composerUsesLocalDraftText = true;
 
 function shouldSubmitFromEnter(event: React.KeyboardEvent<HTMLTextAreaElement>, sendBehavior: SendBehavior): boolean {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;

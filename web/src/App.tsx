@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type SetStateAction } from "react";
-import { api, wsUrl } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { api, isAuthRequiredError, wsUrl } from "./api";
 import { ChatPane } from "./components/ChatPane";
 import { Composer } from "./components/Composer";
 import { ApprovalStack } from "./components/ApprovalStack";
@@ -8,7 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeTokenUsage, normalizeToolCallFromItem, normalizeTurnStartedAt, normalizeTurnTiming, readPath } from "./codex-normalizers";
 import { createClientId } from "./id";
-import { upsertContextCompactionMarkerMessage } from "./message-ordering";
+import { appendOptimisticTurnMessages, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "./message-ordering";
 import { eventsToMessages, threadReadToMessages } from "./thread-history";
 import type { AuthStatus, CapabilityPayload, ComposerCommandMode, PendingApproval, PendingCompactMessage, QueuedSteerMessage, ReasoningEffort, SendBehavior, StatusPayload, TaskSummary, ThemeRecord, ThreadSummary, ToolGroupCollapseMode, UiAssistantPart, UiMessage, UiThread, UiThreadActivityIndicator, UiToolCall, UiWorkspace, UploadedAttachment, UserPreferences, WorkMode } from "./types";
 
@@ -81,7 +81,9 @@ export function App() {
   const [savedPasswordEnabled, setSavedPasswordEnabled] = useState(() => hasSavedPassword());
   const activeThreadIdRef = useRef<string | null>(null);
   const workspacesRef = useRef<UiWorkspace[]>([]);
+  const statusRef = useRef<StatusPayload | null>(null);
   const tasksRef = useRef<TaskSummary[]>([]);
+  const statusRefreshInFlightRef = useRef(false);
   const activityStartedThreadIdsRef = useRef<Set<string>>(new Set());
   const userMessageCountByTurnRef = useRef<Record<string, number>>({});
   const autoLoginAttemptedRef = useRef(false);
@@ -97,6 +99,10 @@ export function App() {
   useEffect(() => {
     workspacesRef.current = workspaces;
   }, [workspaces]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   useEffect(() => {
     tasksRef.current = tasks;
@@ -144,7 +150,7 @@ export function App() {
 
   useEffect(() => {
     function handleAuthRequired() {
-      setAuthStatus((current) => current.enabled ? { ...current, authenticated: false, loaded: true } : current);
+      setAuthStatus((current) => ({ ...current, enabled: true, authenticated: false, loaded: true }));
     }
     window.addEventListener("codex-auth-required", handleAuthRequired);
     return () => window.removeEventListener("codex-auth-required", handleAuthRequired);
@@ -263,6 +269,14 @@ export function App() {
       setActiveThreadId((current) => current && activeThread(merged, current) ? current : null);
       return merged;
     } catch (error) {
+      if (isAuthRequiredError(error)) {
+        setAuthStatus((current) => ({ ...current, enabled: true, authenticated: false, loaded: true }));
+        setWorkspaces([]);
+        setActiveCwd(undefined);
+        setActiveThreadId(null);
+        setWorkspaceLoadError(null);
+        return [];
+      }
       console.error("Failed to load projects or threads", error);
       setWorkspaceLoadError("项目加载失败");
       return [];
@@ -270,13 +284,30 @@ export function App() {
   }
 
   async function refreshStatus() {
-    const nextStatus = await api.status();
-    const runningTurns = onlyRunningTasks(nextStatus.runningTurns ?? []);
-    setStatus(nextStatus);
-    syncThreadActivityIndicators(tasksRef.current, runningTurns);
-    tasksRef.current = runningTurns;
-    setTasks(runningTurns);
-    reconcileLocalRunningTurns(runningTurns);
+    if (statusRefreshInFlightRef.current) return;
+    statusRefreshInFlightRef.current = true;
+    try {
+      const nextStatus = await api.status();
+      const runningTurns = onlyRunningTasks(nextStatus.runningTurns ?? []);
+      if (!sameJson(statusRef.current, nextStatus)) {
+        statusRef.current = nextStatus;
+        setStatus(nextStatus);
+      }
+      syncThreadActivityIndicators(tasksRef.current, runningTurns);
+      if (!sameJson(tasksRef.current, runningTurns)) {
+        tasksRef.current = runningTurns;
+        setTasks(runningTurns);
+      }
+      reconcileLocalRunningTurns(runningTurns);
+    } catch (error) {
+      if (isAuthRequiredError(error)) {
+        setAuthStatus((current) => ({ ...current, enabled: true, authenticated: false, loaded: true }));
+        return;
+      }
+      console.error("Failed to refresh status", error);
+    } finally {
+      statusRefreshInFlightRef.current = false;
+    }
   }
 
   async function loadPreferences() {
@@ -305,8 +336,12 @@ export function App() {
   }
 
   async function refreshCapabilities() {
-    const nextCapabilities = await api.capabilities();
-    setCapabilities(nextCapabilities);
+    try {
+      const nextCapabilities = await api.capabilities();
+      setCapabilities(nextCapabilities);
+    } catch (error) {
+      console.error("Failed to load capabilities", error);
+    }
   }
 
   async function refreshApprovals() {
@@ -587,7 +622,7 @@ export function App() {
           }
         }
       }
-      void refreshStatus();
+      if (!options.replay) void refreshStatus();
       return;
     }
     if (event.type === "codex.thread/tokenUsage/updated") {
@@ -952,6 +987,7 @@ export function App() {
       const turnResult = await api.startTurn(realThreadId, codexText.trim(), turnOverrides, input);
       const turnId = readPath<string>(turnResult, ["turn", "id"]) ?? readPath<string>(turnResult, ["turnId"]);
       if (turnId) {
+        appendOptimisticTurn(realThreadId, turnId, codexText, attachments);
         markThreadGenerating(realThreadId, turnId);
       }
       if (targetThread && !targetThread.isDraft) {
@@ -993,6 +1029,7 @@ export function App() {
       const turnResult = await api.startTurn(threadId, codexText.trim(), turnOverridesFor(workMode, model, effort, commandMode), input);
       const turnId = readPath<string>(turnResult, ["turn", "id"]) ?? readPath<string>(turnResult, ["turnId"]);
       if (turnId) {
+        appendOptimisticTurn(threadId, turnId, codexText, attachments);
         markThreadGenerating(threadId, turnId);
       }
       await selectThread(threadId, targetThread.cwd, { force: true });
@@ -1361,7 +1398,8 @@ export function App() {
       const eventMessages = eventsToMessages(events);
       const runningTask = runningTaskFor(threadId, allRunningTasks(tasksRef.current, localRunningTurns));
       const loadedMessages = eventMessages.length ? mergeUserMessages(threadReadToMessages(thread), eventMessages) : threadReadToMessages(thread);
-      const messages = applyRunningTaskToMessages(loadedMessages, runningTask);
+      const currentMessages = activeThread(workspacesRef.current, threadId)?.messages ?? target.messages;
+      const messages = mergeLoadedMessagesWithCurrent(applyRunningTaskToMessages(loadedMessages, runningTask), currentMessages);
       updateThread(cwd, threadId, {
         messages,
         needsResume: true,
@@ -1399,6 +1437,24 @@ export function App() {
       }
     }));
     markThreadActivityRunning(threadId);
+  }
+
+  function appendOptimisticTurn(threadId: string, turnId: string, text: string, attachments: UploadedAttachment[]) {
+    const startedAt = Date.now();
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => thread.id === threadId
+        ? {
+            ...thread,
+            messages: appendOptimisticTurnMessages(thread.messages, {
+              turnId,
+              text,
+              attachments,
+              startedAt
+            })
+          }
+        : thread)
+    })));
   }
 
   function markThreadActivityRunning(threadId: string) {
@@ -1491,14 +1547,33 @@ export function App() {
   const runningTasks = allRunningTasks(tasks, localRunningTurns);
   const selectedIsGenerating = Boolean(runningTaskFor(activeThreadId, runningTasks));
   const selectedRunningTask = activeThreadId ? runningTaskFor(activeThreadId, runningTasks) : undefined;
-  const selectedQueuedSteers = activeThreadId ? [
+  const selectedQueuedSteers = useMemo(() => activeThreadId ? [
     ...(queuedSteers[activeThreadId] ?? []),
     ...(pendingCompactMessages[activeThreadId] ?? []).map((item) => ({
       id: item.id,
       text: item.text || `${item.attachments.length} 个附件`,
       status: "queued" as const
     }))
-  ] : [];
+  ] : [], [activeThreadId, queuedSteers, pendingCompactMessages]);
+  const rollbackToMessageRef = useRef(rollbackToMessage);
+  const forkFromMessageRef = useRef(forkFromMessage);
+  useEffect(() => {
+    rollbackToMessageRef.current = rollbackToMessage;
+    forkFromMessageRef.current = forkFromMessage;
+  });
+  const handleRemoveQueuedSteer = useCallback((id: string) => {
+    const threadId = activeThreadIdRef.current;
+    if (threadId) removeQueuedSteer(threadId, id);
+  }, []);
+  const handleRollbackMessage = useCallback((messageId: string) => {
+    void rollbackToMessageRef.current(messageId);
+  }, []);
+  const handleForkMessage = useCallback((messageId: string) => {
+    void forkFromMessageRef.current(messageId);
+  }, []);
+  const handleRequestCollapseMobileJumpRail = useCallback(() => {
+    setMobileJumpRailOpen(false);
+  }, []);
   const isDraft = !selectedThread || selectedThread.isDraft;
   const isDraftTransitioning = Boolean(draftTransition && selectedThread && draftTransition.threadId === selectedThread.id && !isDraft);
   const visibleThreadActivityIndicators = Object.fromEntries(
@@ -1681,12 +1756,12 @@ export function App() {
               historyCacheTurnLimit={historyCacheTurnLimit}
               queuedSteers={selectedQueuedSteers}
               runningTask={selectedRunningTask}
-              onRemoveQueuedSteer={(id) => activeThreadId ? removeQueuedSteer(activeThreadId, id) : undefined}
-              onRollbackMessage={(messageId) => void rollbackToMessage(messageId)}
-              onForkMessage={(messageId) => void forkFromMessage(messageId)}
+              onRemoveQueuedSteer={handleRemoveQueuedSteer}
+              onRollbackMessage={handleRollbackMessage}
+              onForkMessage={handleForkMessage}
               isMobileLayout={isMobileLayout}
               mobileJumpRailOpen={mobileJumpRailOpen}
-              onRequestCollapseMobileJumpRail={() => setMobileJumpRailOpen(false)}
+              onRequestCollapseMobileJumpRail={handleRequestCollapseMobileJumpRail}
             />
             <ApprovalStack
               approvals={pendingApprovals}
@@ -2304,6 +2379,10 @@ function isMobileViewport(): boolean {
 function hasSavedPassword(): boolean {
   if (typeof window === "undefined") return false;
   return Boolean(window.localStorage.getItem(SAVED_PASSWORD_KEY));
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function readSavedPassword(): string | null {

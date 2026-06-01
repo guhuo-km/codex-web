@@ -15,6 +15,7 @@ import { listTaskSummaries } from "../tasks/task-index.js";
 import type { ThemeStore } from "../themes/theme-store.js";
 import type { ThreadMetadataRecord, ThreadMetadataStore } from "../threads/thread-metadata-store.js";
 import type { UserPreferencesStore } from "../preferences/user-preferences-store.js";
+import type { RuntimeDiagnostics } from "../runtime/diagnostics.js";
 import { groupThreadsByWorkspace } from "../workspaces/workspace-index.js";
 
 const STALE_RUNNING_TURN_MS = Number(process.env.CODEX_WEB_STALE_RUNNING_TURN_MS ?? 10 * 60 * 1000);
@@ -60,6 +61,7 @@ export interface RouteDeps {
   notifications: NotificationCenter;
   titleGeneration: TitleGenerationService;
   status: () => unknown;
+  diagnostics?: RuntimeDiagnostics;
 }
 
 export function createRoutes(deps: RouteDeps): Router {
@@ -78,6 +80,9 @@ export function createRoutes(deps: RouteDeps): Router {
     interruptStaleRunningTurns(deps);
     ok(res, deps.status());
   });
+  router.get("/api/diagnostics/runtime", asyncHandler(async (_req, res) => {
+    ok(res, deps.diagnostics ? await deps.diagnostics.snapshot() : null);
+  }));
 
   router.get("/api/fs/roots", (_req, res) => ok(res, listRoots()));
 

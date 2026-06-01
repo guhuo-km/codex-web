@@ -23,6 +23,17 @@ import type {
   WorkspaceGroup
 } from "./types";
 
+export class AuthRequiredError extends Error {
+  constructor(message = "Login required") {
+    super(message);
+    this.name = "AuthRequiredError";
+  }
+}
+
+export function isAuthRequiredError(error: unknown): error is AuthRequiredError {
+  return error instanceof AuthRequiredError;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -36,6 +47,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok || !body?.ok) {
     if (response.status === 401 && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("codex-auth-required"));
+      throw new AuthRequiredError(body?.error?.message);
     }
     throw new Error(body?.error?.message ?? `Request failed: ${response.status}`);
   }

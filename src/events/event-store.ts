@@ -36,6 +36,7 @@ export interface StaleRunningTurnOptions {
 export interface EventListFilter {
   threadId?: string;
   afterSeq?: number;
+  limit?: number;
 }
 
 export interface EventPersistence {
@@ -43,9 +44,31 @@ export interface EventPersistence {
   upsertTurn(turn: TurnJob): Promise<void>;
   readEvents(): Promise<BridgeEvent[]>;
   readTurns(): Promise<TurnJob[]>;
+  replaceEvents?(events: BridgeEvent[]): Promise<void>;
+  stats?(): Promise<Record<string, unknown>>;
 }
 
 type EventListener = (event: BridgeEvent) => void;
+
+export interface EventStoreOptions {
+  maxEvents?: number;
+  maxEventBytes?: number;
+}
+
+export interface EventStoreStats {
+  eventCount: number;
+  turnCount: number;
+  runningTurnCount: number;
+  listenerCount: number;
+  nextSeq: number;
+  retainedEventLimit?: number;
+  retainedEventBytesLimit?: number;
+  retainedEventBytes: number;
+  oldestEventSeq?: number;
+  newestEventSeq?: number;
+  oldestEventAt?: string;
+  newestEventAt?: string;
+}
 
 export class EventStore {
   private nextSeq = 1;
@@ -53,8 +76,14 @@ export class EventStore {
   private readonly turns = new Map<string, TurnJob>();
   private readonly pendingCompactThreads = new Set<string>();
   private readonly listeners = new Set<EventListener>();
+  private readonly maxEvents?: number;
+  private readonly maxEventBytes?: number;
+  private eventBytes = 0;
 
-  constructor(private readonly persistence?: EventPersistence) {}
+  constructor(private readonly persistence?: EventPersistence, options: EventStoreOptions = {}) {
+    this.maxEvents = normalizePositiveInteger(options.maxEvents);
+    this.maxEventBytes = normalizePositiveInteger(options.maxEventBytes);
+  }
 
   async load(): Promise<void> {
     if (!this.persistence) return;
@@ -62,12 +91,21 @@ export class EventStore {
       this.persistence.readEvents(),
       this.persistence.readTurns()
     ]);
-    this.events.splice(0, this.events.length, ...events.sort((a, b) => a.seq - b.seq));
+    let maxSeq = 0;
+    for (const event of events) {
+      if (event.seq > maxSeq) maxSeq = event.seq;
+    }
+    this.events.length = 0;
+    for (const event of events.sort((a, b) => a.seq - b.seq)) {
+      this.events.push(event);
+      this.eventBytes += eventSize(event);
+    }
+    this.pruneEvents();
     this.turns.clear();
     for (const turn of turns) {
       this.turns.set(turnKey(turn.threadId, turn.turnId), turn);
     }
-    this.nextSeq = Math.max(0, ...this.events.map((event) => event.seq)) + 1;
+    this.nextSeq = maxSeq + 1;
   }
 
   append(input: BridgeEventInput): BridgeEvent {
@@ -77,6 +115,8 @@ export class EventStore {
       createdAt: new Date().toISOString()
     };
     this.events.push(event);
+    this.eventBytes += eventSize(event);
+    this.pruneEvents();
     void this.persistence?.appendEvent(event).catch((error) => {
       console.error("Failed to persist bridge event", error);
     });
@@ -87,11 +127,40 @@ export class EventStore {
   }
 
   list(filter: EventListFilter = {}): BridgeEvent[] {
-    return this.events.filter((event) => {
+    const filtered = this.events.filter((event) => {
       if (filter.threadId && event.threadId !== filter.threadId) return false;
       if (filter.afterSeq !== undefined && event.seq <= filter.afterSeq) return false;
       return true;
     });
+    const limit = normalizePositiveInteger(filter.limit);
+    return limit && filtered.length > limit ? filtered.slice(-limit) : filtered;
+  }
+
+  async compactPersistence(): Promise<void> {
+    await this.persistence?.replaceEvents?.(this.events);
+  }
+
+  async persistenceStats(): Promise<Record<string, unknown> | undefined> {
+    return this.persistence?.stats?.();
+  }
+
+  stats(): EventStoreStats {
+    const oldest = this.events[0];
+    const newest = this.events.at(-1);
+    return {
+      eventCount: this.events.length,
+      turnCount: this.turns.size,
+      runningTurnCount: this.getRunningTurns().length,
+      listenerCount: this.listeners.size,
+      nextSeq: this.nextSeq,
+      retainedEventLimit: this.maxEvents,
+      retainedEventBytesLimit: this.maxEventBytes,
+      retainedEventBytes: this.eventBytes,
+      oldestEventSeq: oldest?.seq,
+      newestEventSeq: newest?.seq,
+      oldestEventAt: oldest?.createdAt,
+      newestEventAt: newest?.createdAt
+    };
   }
 
   markNextTurnCompact(threadId: string): void {
@@ -189,8 +258,28 @@ export class EventStore {
     return turn.completedAt ?? turn.startedAt;
   }
 
+  private pruneEvents(): void {
+    while (this.events.length && (
+      (this.maxEvents !== undefined && this.events.length > this.maxEvents)
+      || (this.maxEventBytes !== undefined && this.eventBytes > this.maxEventBytes)
+    )) {
+      const [removed] = this.events.splice(0, 1);
+      if (removed) this.eventBytes = Math.max(0, this.eventBytes - eventSize(removed));
+    }
+  }
+
 }
 
 function turnKey(threadId: string, turnId: string): string {
   return `${threadId}:${turnId}`;
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const integer = Math.floor(value);
+  return integer > 0 ? integer : undefined;
+}
+
+function eventSize(event: BridgeEvent): number {
+  return Buffer.byteLength(JSON.stringify(event), "utf8") + 1;
 }

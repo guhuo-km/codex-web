@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Check, Clock3, Copy, FileText, Gauge, GitBranch, MessageSquare, Minus, Plus, RotateCcw, Undo2, X } from "lucide-react";
-import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -36,7 +36,9 @@ interface ChatPaneProps {
   onRequestCollapseMobileJumpRail?: () => void;
 }
 
-export function ChatPane({
+export const isMemoizedChatPane = true;
+
+export const ChatPane = memo(function ChatPane({
   thread,
   isGenerating = false,
   model,
@@ -304,7 +306,7 @@ export function ChatPane({
       ) : null}
     </main>
   );
-}
+});
 
 function parseTaskStartedAt(task: TaskSummary | undefined): number | null {
   if (!task?.startedAt) return null;
