@@ -111,7 +111,6 @@ export const ChatPane = memo(function ChatPane({
     const scrollToBottom = () => {
       suppressProgrammaticScroll();
       scrollElement.scrollTop = scrollElement.scrollHeight;
-      bottomRef.current?.scrollIntoView({ block: "end" });
       followingBottomRef.current = true;
       previousScrollTopRef.current = scrollElement.scrollTop;
     };
@@ -138,7 +137,6 @@ export const ChatPane = memo(function ChatPane({
     if (!followingBottomRef.current) return;
     suppressProgrammaticScroll();
     scrollElement.scrollTop = scrollElement.scrollHeight;
-    bottomRef.current?.scrollIntoView({ block: "end" });
     previousScrollTopRef.current = scrollElement.scrollTop;
   }, [messages, turns.length, isGenerating, visibleTurnWindow.end, showEmpty]);
 
@@ -184,6 +182,9 @@ export const ChatPane = memo(function ChatPane({
     }
     previousScrollTopRef.current = scrollElement.scrollTop;
     if (!userScrollIntentRef.current) {
+      return;
+    }
+    if (isGenerating && followingBottomRef.current) {
       return;
     }
     if (restoreScrollRef.current) {

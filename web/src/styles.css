@@ -3913,6 +3913,11 @@ textarea:disabled {
   padding: 12px;
 }
 
+.settings-option-stack {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
 .settings-option span {
   display: grid;
   gap: 4px;
@@ -3956,6 +3961,22 @@ textarea:disabled {
   color: var(--foreground);
   padding: 0 8px;
   font: inherit;
+}
+
+.settings-inline-select {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-inline-select span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.settings-option .settings-inline-select select {
+  width: 100%;
 }
 
 .settings-inline-button {

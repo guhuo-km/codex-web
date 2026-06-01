@@ -68,7 +68,8 @@ export function App() {
   const [toolGroupCollapseMode, setToolGroupCollapseMode] = useState<ToolGroupCollapseMode>("alwaysExpanded");
   const [approvalDetailsCollapsedByDefault, setApprovalDetailsCollapsedByDefault] = useState(true);
   const [renderUserMessagesAsMarkdown, setRenderUserMessagesAsMarkdown] = useState(false);
-  const [sendBehavior, setSendBehavior] = useState<SendBehavior>("enter");
+  const [desktopSendBehavior, setDesktopSendBehavior] = useState<SendBehavior>("enter");
+  const [mobileSendBehavior, setMobileSendBehavior] = useState<SendBehavior>("shiftEnter");
   const [historyCacheTurnLimit, setHistoryCacheTurnLimit] = useState(DEFAULT_HISTORY_CACHE_TURNS);
   const [sidebarWidth, setSidebarWidth] = useState(286);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -192,7 +193,8 @@ export function App() {
         toolGroupCollapseMode,
         approvalDetailsCollapsedByDefault,
         renderUserMessagesAsMarkdown,
-        sendBehavior,
+        desktopSendBehavior,
+        mobileSendBehavior,
         historyCacheTurnLimit,
         sidebarWidth,
         sidebarCollapsed,
@@ -204,7 +206,7 @@ export function App() {
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [authReady, preferencesLoaded, colorMode, activeThemeId, toolGroupCollapseMode, approvalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, sendBehavior, historyCacheTurnLimit, sidebarWidth, sidebarCollapsed, model, workMode, effort]);
+  }, [authReady, preferencesLoaded, colorMode, activeThemeId, toolGroupCollapseMode, approvalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, desktopSendBehavior, mobileSendBehavior, historyCacheTurnLimit, sidebarWidth, sidebarCollapsed, model, workMode, effort]);
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
@@ -326,7 +328,8 @@ export function App() {
     setToolGroupCollapseMode(preferences.toolGroupCollapseMode ?? (preferences.collapseToolGroupsByDefault ? "alwaysCollapsed" : "alwaysExpanded"));
     setApprovalDetailsCollapsedByDefault(Boolean(preferences.approvalDetailsCollapsedByDefault));
     setRenderUserMessagesAsMarkdown(Boolean(preferences.renderUserMessagesAsMarkdown));
-    setSendBehavior(preferences.sendBehavior === "shiftEnter" ? "shiftEnter" : "enter");
+    setDesktopSendBehavior(normalizeSendBehavior(preferences.desktopSendBehavior ?? preferences.sendBehavior, "enter"));
+    setMobileSendBehavior(normalizeSendBehavior(preferences.mobileSendBehavior ?? preferences.sendBehavior, "shiftEnter"));
     setHistoryCacheTurnLimit(clampNumber(preferences.historyCacheTurnLimit, MIN_HISTORY_CACHE_TURNS, MAX_HISTORY_CACHE_TURNS, DEFAULT_HISTORY_CACHE_TURNS));
     setSidebarWidth(clampNumber(preferences.sidebarWidth, 240, 520, 286));
     setSidebarCollapsed(isMobileViewport() ? true : Boolean(preferences.sidebarCollapsed));
@@ -1666,8 +1669,11 @@ export function App() {
         onToggleApprovalDetailsCollapsedByDefault={() => setApprovalDetailsCollapsedByDefault((current) => !current)}
         renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
         onToggleRenderUserMessagesAsMarkdown={() => setRenderUserMessagesAsMarkdown((current) => !current)}
-        sendBehavior={sendBehavior}
-        onSendBehaviorChange={setSendBehavior}
+        desktopSendBehavior={desktopSendBehavior}
+        mobileSendBehavior={mobileSendBehavior}
+        activeSendBehaviorDevice={isMobileLayout ? "mobile" : "desktop"}
+        onDesktopSendBehaviorChange={setDesktopSendBehavior}
+        onMobileSendBehaviorChange={setMobileSendBehavior}
         historyCacheTurnLimit={historyCacheTurnLimit}
         onHistoryCacheTurnLimitChange={setHistoryCacheTurnLimit}
         sidebarWidth={sidebarWidth}
@@ -1718,7 +1724,7 @@ export function App() {
               composerText,
               composerAttachments,
               commandMode,
-              sendBehavior,
+              sendBehavior: effectiveSendBehavior(isMobileLayout, desktopSendBehavior, mobileSendBehavior),
               setActiveCwd,
               createThread,
               setWorkMode,
@@ -1791,7 +1797,7 @@ export function App() {
               composerText,
               composerAttachments,
               commandMode,
-              sendBehavior,
+              sendBehavior: effectiveSendBehavior(isMobileLayout, desktopSendBehavior, mobileSendBehavior),
               setActiveCwd,
               createThread,
               setWorkMode,
@@ -2347,7 +2353,8 @@ function currentPreferences(input: {
   toolGroupCollapseMode: ToolGroupCollapseMode;
   approvalDetailsCollapsedByDefault: boolean;
   renderUserMessagesAsMarkdown: boolean;
-  sendBehavior: SendBehavior;
+  desktopSendBehavior: SendBehavior;
+  mobileSendBehavior: SendBehavior;
   historyCacheTurnLimit: number;
   sidebarWidth: number;
   sidebarCollapsed: boolean;
@@ -2362,7 +2369,9 @@ function currentPreferences(input: {
     toolGroupCollapseMode: input.toolGroupCollapseMode,
     approvalDetailsCollapsedByDefault: input.approvalDetailsCollapsedByDefault,
     renderUserMessagesAsMarkdown: input.renderUserMessagesAsMarkdown,
-    sendBehavior: input.sendBehavior,
+    sendBehavior: input.desktopSendBehavior,
+    desktopSendBehavior: input.desktopSendBehavior,
+    mobileSendBehavior: input.mobileSendBehavior,
     historyCacheTurnLimit: clampNumber(input.historyCacheTurnLimit, MIN_HISTORY_CACHE_TURNS, MAX_HISTORY_CACHE_TURNS, DEFAULT_HISTORY_CACHE_TURNS),
     sidebarWidth: clampNumber(input.sidebarWidth, 240, 520, 286),
     sidebarCollapsed: input.sidebarCollapsed,
@@ -2370,6 +2379,16 @@ function currentPreferences(input: {
     defaultWorkMode: input.workMode,
     defaultEffort: input.effort
   };
+}
+
+function normalizeSendBehavior(value: unknown, fallback: SendBehavior): SendBehavior {
+  if (value === "shiftEnter" || value === "modEnter") return "shiftEnter";
+  if (value === "enter") return "enter";
+  return fallback;
+}
+
+function effectiveSendBehavior(isMobileLayout: boolean, desktop: SendBehavior, mobile: SendBehavior): SendBehavior {
+  return isMobileLayout ? mobile : desktop;
 }
 
 function isMobileViewport(): boolean {

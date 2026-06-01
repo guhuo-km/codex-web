@@ -201,6 +201,8 @@ export interface UserPreferences {
   sidebarWidth: number;
   sidebarCollapsed?: boolean;
   sendBehavior: SendBehavior;
+  desktopSendBehavior: SendBehavior;
+  mobileSendBehavior: SendBehavior;
   defaultModel?: string;
   defaultWorkMode: WorkMode;
   defaultEffort: ReasoningEffort;

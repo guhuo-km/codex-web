@@ -44,8 +44,11 @@ interface SidebarProps {
   onToggleApprovalDetailsCollapsedByDefault: () => void;
   renderUserMessagesAsMarkdown: boolean;
   onToggleRenderUserMessagesAsMarkdown: () => void;
-  sendBehavior: SendBehavior;
-  onSendBehaviorChange: (value: SendBehavior) => void;
+  desktopSendBehavior: SendBehavior;
+  mobileSendBehavior: SendBehavior;
+  activeSendBehaviorDevice: "desktop" | "mobile";
+  onDesktopSendBehaviorChange: (value: SendBehavior) => void;
+  onMobileSendBehaviorChange: (value: SendBehavior) => void;
   historyCacheTurnLimit: number;
   onHistoryCacheTurnLimitChange: (value: number) => void;
   sidebarWidth: number;
@@ -64,7 +67,7 @@ interface SidebarProps {
   onLogout: () => void | Promise<void>;
 }
 
-export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, threadActivityIndicators, onSelectWorkspace, onSelectThread, onAddWorkspace, onQuickCreateWorkspace, onNewThread, onRenameProject, onPinProject, onMoveProject, onDeleteProject, onRestoreProject, onPinThread, onRegenerateThreadTitle, onRenameThread, onExportThread, onDeleteThread, onRestoreThread, onMoveThread, colorMode, themes, activeThemeId, onToggleColorMode, onSelectTheme, onCreateTheme, onDeleteTheme, toolGroupCollapseMode, onToolGroupCollapseModeChange, approvalDetailsCollapsedByDefault, onToggleApprovalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, onToggleRenderUserMessagesAsMarkdown, sendBehavior, onSendBehaviorChange, historyCacheTurnLimit, onHistoryCacheTurnLimitChange, sidebarWidth, onSidebarWidthChange, defaultModel, defaultWorkMode, defaultEffort, onDefaultModelChange, onDefaultWorkModeChange, onDefaultEffortChange, authEnabled, authenticated, savedPasswordEnabled, onAuthSettingsChange, onClearSavedPassword, onLogout }: SidebarProps) {
+export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, threadActivityIndicators, onSelectWorkspace, onSelectThread, onAddWorkspace, onQuickCreateWorkspace, onNewThread, onRenameProject, onPinProject, onMoveProject, onDeleteProject, onRestoreProject, onPinThread, onRegenerateThreadTitle, onRenameThread, onExportThread, onDeleteThread, onRestoreThread, onMoveThread, colorMode, themes, activeThemeId, onToggleColorMode, onSelectTheme, onCreateTheme, onDeleteTheme, toolGroupCollapseMode, onToolGroupCollapseModeChange, approvalDetailsCollapsedByDefault, onToggleApprovalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, onToggleRenderUserMessagesAsMarkdown, desktopSendBehavior, mobileSendBehavior, activeSendBehaviorDevice, onDesktopSendBehaviorChange, onMobileSendBehaviorChange, historyCacheTurnLimit, onHistoryCacheTurnLimitChange, sidebarWidth, onSidebarWidthChange, defaultModel, defaultWorkMode, defaultEffort, onDefaultModelChange, onDefaultWorkModeChange, onDefaultEffortChange, authEnabled, authenticated, savedPasswordEnabled, onAuthSettingsChange, onClearSavedPassword, onLogout }: SidebarProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
@@ -508,16 +511,26 @@ export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, thre
                       </span>
                       <input type="checkbox" checked={renderUserMessagesAsMarkdown} onChange={onToggleRenderUserMessagesAsMarkdown} />
                     </label>
-                    <label className="settings-option">
+                    <div className="settings-option settings-option-stack">
                       <span>
                         <strong>消息发送方式</strong>
-                        <small>选择 Enter 发送或 Enter 换行，两种方式都只使用 Shift+Enter 作为反向操作。</small>
+                        <small>桌面和手机分别保存；当前正在使用{activeSendBehaviorDevice === "mobile" ? "手机" : "桌面"}设置。</small>
                       </span>
-                      <select value={sendBehavior} onChange={(event) => onSendBehaviorChange(event.target.value as SendBehavior)}>
-                        <option value="enter">Enter 发送，Shift+Enter 换行</option>
-                        <option value="shiftEnter">Enter 换行，Shift+Enter 发送</option>
-                      </select>
-                    </label>
+                      <label className="settings-inline-select">
+                        <span>桌面</span>
+                        <select value={desktopSendBehavior} onChange={(event) => onDesktopSendBehaviorChange(event.target.value as SendBehavior)}>
+                          <option value="enter">Enter 发送，Shift+Enter 换行</option>
+                          <option value="shiftEnter">Enter 换行，Shift+Enter 发送</option>
+                        </select>
+                      </label>
+                      <label className="settings-inline-select">
+                        <span>手机</span>
+                        <select value={mobileSendBehavior} onChange={(event) => onMobileSendBehaviorChange(event.target.value as SendBehavior)}>
+                          <option value="enter">Enter 发送，Shift+Enter 换行</option>
+                          <option value="shiftEnter">Enter 换行，Shift+Enter 发送</option>
+                        </select>
+                      </label>
+                    </div>
                   </>
                 ) : null}
                 {settingsSection === "approvals" ? (

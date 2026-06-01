@@ -18,6 +18,8 @@ export interface UserPreferences {
   sidebarWidth: number;
   sidebarCollapsed?: boolean;
   sendBehavior: SendBehavior;
+  desktopSendBehavior: SendBehavior;
+  mobileSendBehavior: SendBehavior;
   defaultModel?: string;
   defaultWorkMode: WorkMode;
   defaultEffort: ReasoningEffort;
@@ -33,6 +35,8 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   historyCacheTurnLimit: 30,
   sidebarWidth: 286,
   sendBehavior: "enter",
+  desktopSendBehavior: "enter",
+  mobileSendBehavior: "shiftEnter",
   defaultWorkMode: "yolo",
   defaultEffort: "medium"
 };
@@ -76,7 +80,9 @@ function normalizePreferences(input: unknown): UserPreferences {
     historyCacheTurnLimit: clampNumber(value.historyCacheTurnLimit, 20, 200, DEFAULT_PREFERENCES.historyCacheTurnLimit),
     sidebarWidth: clampNumber(value.sidebarWidth, 240, 520, DEFAULT_PREFERENCES.sidebarWidth),
     sidebarCollapsed: Boolean(value.sidebarCollapsed),
-    sendBehavior: normalizeSendBehavior(value.sendBehavior),
+    sendBehavior: normalizeSendBehavior(value.sendBehavior, DEFAULT_PREFERENCES.sendBehavior),
+    desktopSendBehavior: normalizeSendBehavior(value.desktopSendBehavior, normalizeSendBehavior(value.sendBehavior, DEFAULT_PREFERENCES.desktopSendBehavior)),
+    mobileSendBehavior: normalizeSendBehavior(value.mobileSendBehavior, normalizeSendBehavior(value.sendBehavior, DEFAULT_PREFERENCES.mobileSendBehavior)),
     defaultModel: typeof value.defaultModel === "string" && value.defaultModel.trim() ? value.defaultModel : undefined,
     defaultWorkMode: isWorkMode(value.defaultWorkMode) ? value.defaultWorkMode : DEFAULT_PREFERENCES.defaultWorkMode,
     defaultEffort: isReasoningEffort(value.defaultEffort) ? value.defaultEffort : DEFAULT_PREFERENCES.defaultEffort
@@ -96,9 +102,10 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return value === "low" || value === "medium" || value === "high" || value === "xhigh";
 }
 
-function normalizeSendBehavior(value: unknown): SendBehavior {
+function normalizeSendBehavior(value: unknown, fallback: SendBehavior): SendBehavior {
   if (value === "shiftEnter" || value === "modEnter") return "shiftEnter";
-  return DEFAULT_PREFERENCES.sendBehavior;
+  if (value === "enter") return "enter";
+  return fallback;
 }
 
 function normalizeToolGroupCollapseMode(value: unknown, legacyCollapseByDefault: unknown): ToolGroupCollapseMode {
