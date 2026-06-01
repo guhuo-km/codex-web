@@ -1,0 +1,27 @@
+:root {
+  --background: #faf7f2;
+  --foreground: #27231f;
+  --sidebar: #f0ebe4;
+  --muted: #eee7dd;
+  --muted-foreground: #766b61;
+  --border: #ded4c8;
+  --primary: #9b5a34;
+  --primary-foreground: #fffaf4;
+  --ring: #c48b64;
+  --success: #4f8a68;
+  --danger: #b84b45;
+}
+
+:root.dark {
+  --background: #191614;
+  --foreground: #eee7dd;
+  --sidebar: #211d1a;
+  --muted: #2b251f;
+  --muted-foreground: #b2a79b;
+  --border: #3a3029;
+  --primary: #d89a70;
+  --primary-foreground: #21140e;
+  --ring: #a96e4f;
+  --success: #82c59b;
+  --danger: #ef8a82;
+}
