@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -55,5 +55,34 @@ describe("ToolExplanationStore", () => {
       toolCallId: "tool-2",
       command: "second"
     })).resolves.toBe("第二条解释".repeat(30));
+  });
+
+  test("serializes concurrent writes without corrupting the cache file", async () => {
+    const store = new ToolExplanationStore(dataDir);
+    await Promise.all(Array.from({ length: 20 }, (_, index) => store.set({
+      threadId: "thread-1",
+      turnId: `turn-${index}`,
+      toolCallId: `tool-${index}`,
+      command: `echo ${index}`
+    }, `解释 ${index}`)));
+
+    const parsed = JSON.parse(await readFile(join(dataDir, "tool-explanations.json"), "utf8"));
+
+    expect(parsed.records).toHaveLength(20);
+    await expect(store.get({
+      threadId: "thread-1",
+      turnId: "turn-19",
+      toolCallId: "tool-19",
+      command: "echo 19"
+    })).resolves.toBe("解释 19");
+  });
+
+  test("does not fail annotation when the cache file is corrupt", async () => {
+    await writeFile(join(dataDir, "tool-explanations.json"), "{ not json", "utf8");
+
+    await expect(new ToolExplanationStore(dataDir).annotate([{ type: "commandExecution" }])).resolves.toEqual([{ type: "commandExecution" }]);
+    await expect(readdir(dataDir)).resolves.toEqual(expect.arrayContaining([
+      expect.stringMatching(/^tool-explanations\.json\.corrupt-/)
+    ]));
   });
 });

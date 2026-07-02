@@ -2,6 +2,46 @@ import { describe, expect, test } from "vitest";
 import { eventsToMessages } from "../web/src/thread-history.js";
 
 describe("agent event stream", () => {
+  test("renders collab agent tool calls as subagent parts instead of generic events", () => {
+    const messages = eventsToMessages([
+      {
+        seq: 1,
+        type: "codex.item/started",
+        createdAt: "2026-07-03T00:25:44.000Z",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        payload: {
+          params: {
+            item: {
+              id: "subagent-call-1",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "inProgress",
+              senderThreadId: "thread-1",
+              receiverThreadIds: ["thread-child"],
+              prompt: "只读探索项目结构",
+              agentsStates: {
+                "thread-child": { status: "pendingInit", message: "Fermat" }
+              }
+            }
+          }
+        }
+      }
+    ]);
+
+    expect(messages[0]?.assistantParts).toEqual([
+      expect.objectContaining({
+        type: "subagent",
+        id: "subagent-call-1",
+        subagent: expect.objectContaining({
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          prompt: "只读探索项目结构"
+        })
+      })
+    ]);
+  });
+
   test("keeps turn lifecycle out of assistant event parts", () => {
     const messages = eventsToMessages([
       {

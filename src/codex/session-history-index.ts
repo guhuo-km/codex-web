@@ -8,6 +8,11 @@ export interface SessionIndexEntry {
   name?: string | null;
   updatedAt: number;
   status: "completed";
+  parentThreadId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  isSubagent?: boolean;
   filePath: string;
   mtimeMs: number;
   size: number;

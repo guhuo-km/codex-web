@@ -14,6 +14,11 @@ export interface LocalThreadSummary {
   name?: string | null;
   updatedAt: number;
   status: "completed";
+  parentThreadId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  isSubagent?: boolean;
 }
 
 export interface ListLocalThreadsInput {
@@ -66,6 +71,11 @@ export async function listLocalCodexThreads(input: ListLocalThreadsInput = {}): 
         name: result.name ?? null,
         updatedAt: result.updatedAt,
         status: result.status,
+        parentThreadId: result.parentThreadId,
+        threadSource: result.threadSource,
+        agentNickname: result.agentNickname,
+        agentRole: result.agentRole,
+        isSubagent: result.isSubagent,
         filePath: file.file,
         mtimeMs: file.mtimeMs,
         size: file.size
@@ -129,7 +139,12 @@ function indexEntryToThread(entry: SessionIndexEntry): LocalThreadSummary {
     preview: entry.preview,
     name: entry.name,
     updatedAt: entry.updatedAt,
-    status: "completed"
+    status: "completed",
+    parentThreadId: entry.parentThreadId,
+    threadSource: entry.threadSource,
+    agentNickname: entry.agentNickname,
+    agentRole: entry.agentRole,
+    isSubagent: entry.isSubagent
   };
 }
 
@@ -139,6 +154,10 @@ async function readRolloutSummary(file: string, fileInfo?: { mtimeMs: number; si
   let preview = "";
   let name: string | null = null;
   let updatedAt = fileInfo?.mtimeMs ?? (await stat(file)).mtimeMs;
+  let parentThreadId: string | undefined;
+  let threadSource: string | undefined;
+  let agentNickname: string | undefined;
+  let agentRole: string | undefined;
 
   const reader = createInterface({
     input: createReadStream(file, { encoding: "utf8" }),
@@ -153,6 +172,10 @@ async function readRolloutSummary(file: string, fileInfo?: { mtimeMs: number; si
       if (record.type === "session_meta") {
         id = String(record.payload?.id ?? id);
         cwd = String(record.payload?.cwd ?? cwd);
+        parentThreadId = stringValue(record.payload?.parent_thread_id) ?? stringValue(record.payload?.parentThreadId) ?? parentThreadId;
+        threadSource = stringValue(record.payload?.thread_source) ?? stringValue(record.payload?.threadSource) ?? threadSource;
+        agentNickname = stringValue(record.payload?.agent_nickname) ?? stringValue(record.payload?.agentNickname) ?? agentNickname;
+        agentRole = stringValue(record.payload?.agent_role) ?? stringValue(record.payload?.agentRole) ?? agentRole;
         updatedAt = Math.max(updatedAt, timeFrom(record.payload?.timestamp));
         continue;
       }
@@ -172,7 +195,12 @@ async function readRolloutSummary(file: string, fileInfo?: { mtimeMs: number; si
     preview: preview || undefined,
     name,
     updatedAt: updatedAt || Date.now(),
-    status: "completed"
+    status: "completed",
+    parentThreadId,
+    threadSource,
+    agentNickname,
+    agentRole,
+    isSubagent: Boolean(parentThreadId || threadSource === "subagent")
   };
 }
 
@@ -210,4 +238,8 @@ function safeJson(line: string): any | null {
   } catch {
     return null;
   }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

@@ -306,10 +306,10 @@ export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, thre
 
                   {isExpanded ? (
                     <div className="thread-list">
-                      {workspace.threads.length === 0 ? (
+                      {workspace.threads.filter((thread) => !thread.isSubagent).length === 0 ? (
                         <div className="thread-empty">暂无会话</div>
                       ) : (
-                        workspace.threads.map((thread) => {
+                        workspace.threads.filter((thread) => !thread.isSubagent).map((thread) => {
                           const isActiveThread = thread.id === activeThreadId;
                           const activityIndicator = threadActivityIndicators[thread.id];
                           const dropPreviewClass = threadDropPreview?.cwd === workspace.cwd && threadDropPreview.id === thread.id

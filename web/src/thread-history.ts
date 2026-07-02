@@ -1,5 +1,5 @@
 import { agentEventPartId, eventToAgentEvent, isAgentEventSourceEvent, isGenericTurnAgentEventSourceEvent, isUnknownCodexItemEvent, isUnknownRawResponseItemEvent } from "./agent-events.js";
-import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeReasoningItem, normalizeTokenUsage, normalizeToolCallFromItem, pathBasename, readPath } from "./codex-normalizers.js";
+import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, isSubagentItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeReasoningItem, normalizeSubagentCallFromItem, normalizeTokenUsage, normalizeToolCallFromItem, pathBasename, readPath } from "./codex-normalizers.js";
 import type { BridgeEvent, UiAgentEvent, UiAssistantPart, UiMessage, UiToolCall, UploadedAttachment } from "./types.js";
 
 export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
@@ -140,6 +140,12 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
       continue;
     }
 
+    if (isSubagentItem(item)) {
+      const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+      upsertAssistantSubagentPart(assistant, normalizeSubagentCallFromItem(item));
+      continue;
+    }
+
     if (isUnknownCodexItemEvent(event)) {
       const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
       appendAgentEventPart(assistant, eventToAgentEvent(event), event);
@@ -189,9 +195,10 @@ export function threadReadToMessages(input: unknown): UiMessage[] {
       }
 
       const toolCall = candidateToToolCall(candidate);
+      const subagent = candidateToSubagent(candidate);
       const reasoning = candidateToReasoning(candidate);
       const assistantMessage = userMessage?.role === "assistant" ? userMessage : null;
-      if ((assistantMessage || toolCall || reasoning) && !assistant) {
+      if ((assistantMessage || toolCall || subagent || reasoning) && !assistant) {
       assistant = createAssistantTurn(turnId, turnStartedAt, turnCompletedAt, turn);
         messages.push(assistant);
       }
@@ -200,6 +207,9 @@ export function threadReadToMessages(input: unknown): UiMessage[] {
       }
       if (toolCall && assistant) {
         upsertAssistantToolPart(assistant, toolCall);
+      }
+      if (subagent && assistant) {
+        upsertAssistantSubagentPart(assistant, subagent);
       }
       if (reasoning && assistant) {
         upsertReasoningPart(assistant, reasoning.id, reasoning.text, reasoning.summary);
@@ -317,6 +327,12 @@ function candidateToToolCall(candidate: unknown): UiToolCall | null {
   return normalizeToolCallFromItem(item);
 }
 
+function candidateToSubagent(candidate: unknown): Extract<UiAssistantPart, { type: "subagent" }>["subagent"] | null {
+  const item = (candidate as any)?.type === "event_msg" ? (candidate as any).payload : candidate as any;
+  if (!isSubagentItem(item)) return null;
+  return normalizeSubagentCallFromItem(item);
+}
+
 function candidateToReasoning(candidate: unknown): { id: string; text: string; summary?: boolean } | null {
   const item = (candidate as any)?.type === "event_msg" ? (candidate as any).payload : candidate as any;
   return normalizeReasoningItem(item);
@@ -376,6 +392,13 @@ function upsertAssistantToolPart(message: UiMessage, toolCall: UiToolCall): void
   message.assistantParts = parts.some((part) => part.type === "tool" && part.id === toolCall.id)
     ? parts.map((part) => part.type === "tool" && part.id === toolCall.id ? { ...part, toolCall } : part)
     : [...parts, { type: "tool", id: toolCall.id, toolCall }];
+}
+
+function upsertAssistantSubagentPart(message: UiMessage, subagent: Extract<UiAssistantPart, { type: "subagent" }>["subagent"]): void {
+  const parts = message.assistantParts ?? [];
+  message.assistantParts = parts.some((part) => part.type === "subagent" && part.id === subagent.id)
+    ? parts.map((part) => part.type === "subagent" && part.id === subagent.id ? { ...part, subagent } : part)
+    : [...parts, { type: "subagent", id: subagent.id, subagent }];
 }
 
 function updateAssistantToolPart(message: UiMessage, itemId: string, updater: (toolCall: UiToolCall) => UiToolCall): void {

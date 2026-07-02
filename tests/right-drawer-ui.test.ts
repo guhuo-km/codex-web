@@ -69,6 +69,31 @@ describe("right side drawer UI", () => {
     expect(html.indexOf("读取 package.json 的完整文本内容。")).toBeLessThan(html.indexOf("Get-Content -Raw package.json"));
   });
 
+  test("renders agent event disclosures without native details layout", () => {
+    const html = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: agentEventThread,
+      isGenerating: true
+    }));
+
+    expect(html).toContain("agent-event-disclosure");
+    expect(html).toContain("aria-expanded=\"false\"");
+    expect(html).not.toContain("<details");
+    expect(html).not.toContain("<summary");
+  });
+
+  test("renders subagent calls as first-class call cards", () => {
+    const html = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: subagentThread,
+      isGenerating: true
+    }));
+
+    expect(html).toContain("subagent-call-card");
+    expect(html).toContain("subagent-call-icon");
+    expect(html).toContain("启动子代理");
+    expect(html).toContain("Fermat");
+    expect(html).not.toContain("codex.item/started");
+  });
+
   test("renders the right drawer handle on desktop even when there is only one turn", () => {
     const html = renderToStaticMarkup(React.createElement(ChatPane, {
       thread: singleTurnThread,
@@ -230,6 +255,74 @@ const explainedToolThread: UiThread = {
           commandExplanation: "读取 package.json 的完整文本内容。",
           status: "completed",
           durationMs: 128
+        }
+      }]
+    }
+  ]
+};
+
+const agentEventThread: UiThread = {
+  id: "thread-agent-event",
+  cwd: "D:\\repo",
+  title: "Thread",
+  updatedAt: Date.now(),
+  isDraft: false,
+  messages: [
+    { id: "user-agent-event", role: "user", text: "run", createdAt: 1, turnId: "turn-agent-event" },
+    {
+      id: "assistant-agent-event",
+      role: "assistant",
+      text: "",
+      createdAt: 2,
+      turnId: "turn-agent-event",
+      assistantParts: [{
+        type: "agentEvent",
+        id: "event-1",
+        event: {
+          kind: "status",
+          title: "codex.item/started",
+          tone: "info",
+          createdAt: Date.parse("2026-07-03T00:25:44.000Z"),
+          details: { item: { type: "commandExecution", command: "Get-Content package.json" } }
+        }
+      }]
+    }
+  ]
+};
+
+const subagentThread: UiThread = {
+  id: "thread-subagent",
+  cwd: "D:\\repo",
+  title: "Thread",
+  updatedAt: Date.now(),
+  isDraft: false,
+  messages: [
+    { id: "user-subagent", role: "user", text: "spawn", createdAt: 1, turnId: "turn-subagent" },
+    {
+      id: "assistant-subagent",
+      role: "assistant",
+      text: "",
+      createdAt: 2,
+      turnId: "turn-subagent",
+      assistantParts: [{
+        type: "subagent",
+        id: "subagent-call-1",
+        subagent: {
+          id: "subagent-call-1",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          status: "completed",
+          senderThreadId: "thread-subagent",
+          receiverThreadIds: ["thread-child"],
+          prompt: "只读探索项目结构",
+          agentsStates: {
+            "thread-child": { status: "completed", message: "Fermat" }
+          },
+          details: {
+            id: "subagent-call-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent"
+          }
         }
       }]
     }

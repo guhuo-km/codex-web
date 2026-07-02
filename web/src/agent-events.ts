@@ -125,7 +125,9 @@ export function isUnknownCodexItemEvent(event: AgentEventSource): boolean {
     "dynamicToolCall",
     "webSearch",
     "imageView",
-    "imageGeneration"
+    "imageGeneration",
+    "collabAgentToolCall",
+    "subAgentActivity"
   ].includes(itemType);
 }
 

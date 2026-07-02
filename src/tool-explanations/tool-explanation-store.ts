@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface ToolExplanationIdentity {
@@ -23,27 +23,45 @@ interface ToolExplanationFile {
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 
 export class ToolExplanationStore {
+  private writeQueue: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly dataDir: string,
     private readonly maxBytes = DEFAULT_MAX_BYTES
   ) {}
 
   async get(input: ToolExplanationIdentity): Promise<string | undefined> {
-    const record = (await this.readRecords()).find((item) => recordKey(item) === identityKey(input));
+    await this.writeQueue.catch(() => undefined);
+    const record = (await this.readRecordsFromDisk()).find((item) => recordKey(item) === identityKey(input));
     return record?.explanation;
   }
 
   async set(input: ToolExplanationIdentity, explanation: string): Promise<void> {
     const clean = explanation.trim();
     if (!clean) return;
-    const records = await this.readRecords();
+    this.writeQueue = this.writeQueue
+      .catch(() => undefined)
+      .then(() => this.setLocked(input, clean));
+    await this.writeQueue;
+  }
+
+  async annotate(input: unknown): Promise<unknown> {
+    await this.writeQueue.catch(() => undefined);
+    const records = await this.readRecordsFromDisk();
+    if (!records.length) return input;
+    const byKey = new Map(records.map((record) => [recordKey(record), record.explanation]));
+    return annotateValue(input, byKey);
+  }
+
+  private async setLocked(input: ToolExplanationIdentity, explanation: string): Promise<void> {
+    const records = await this.readRecordsFromDisk();
     const now = Date.now();
     const key = identityKey(input);
     const nextRecord: ToolExplanationRecord = {
       ...input,
       command: input.command.trim(),
       commandHash: commandHash(input.command),
-      explanation: clean,
+      explanation,
       createdAt: records.find((item) => recordKey(item) === key)?.createdAt ?? now,
       updatedAt: now
     };
@@ -51,27 +69,27 @@ export class ToolExplanationStore {
     await this.writeRecords(pruneToLimit(next, this.maxBytes));
   }
 
-  async annotate(input: unknown): Promise<unknown> {
-    const records = await this.readRecords();
-    if (!records.length) return input;
-    const byKey = new Map(records.map((record) => [recordKey(record), record.explanation]));
-    return annotateValue(input, byKey);
-  }
-
-  private async readRecords(): Promise<ToolExplanationRecord[]> {
+  private async readRecordsFromDisk(): Promise<ToolExplanationRecord[]> {
     try {
       const text = await readFile(this.filePath(), "utf8");
       const parsed = JSON.parse(text) as ToolExplanationFile;
       return Array.isArray(parsed.records) ? parsed.records.filter(isRecord) : [];
     } catch (error: any) {
       if (error?.code === "ENOENT") return [];
+      if (error instanceof SyntaxError) {
+        await rename(this.filePath(), `${this.filePath()}.corrupt-${Date.now()}`).catch(() => undefined);
+        return [];
+      }
       throw error;
     }
   }
 
   private async writeRecords(records: ToolExplanationRecord[]): Promise<void> {
     await mkdir(this.dataDir, { recursive: true });
-    await writeFile(this.filePath(), `${JSON.stringify({ records }, null, 2)}\n`, "utf8");
+    const filePath = this.filePath();
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify({ records }, null, 2)}\n`, "utf8");
+    await rename(tempPath, filePath);
   }
 
   private filePath(): string {

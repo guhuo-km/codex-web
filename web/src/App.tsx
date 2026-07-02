@@ -7,11 +7,11 @@ import { ApprovalStack } from "./components/ApprovalStack";
 import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
-import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeTokenUsage, normalizeToolCallFromItem, normalizeTurnStartedAt, normalizeTurnTiming, readPath } from "./codex-normalizers";
+import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, isSubagentItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeSubagentCallFromItem, normalizeTokenUsage, normalizeToolCallFromItem, normalizeTurnStartedAt, normalizeTurnTiming, readPath } from "./codex-normalizers";
 import { createClientId } from "./id";
-import { appendOptimisticTurnMessages, messagesBeforeRollbackTarget, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "./message-ordering";
+import { appendOptimisticTurnMessages, mergeThreadAndEventMessages, messagesBeforeRollbackTarget, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "./message-ordering";
 import { eventsToMessages, threadReadToMessages } from "./thread-history";
-import type { AuthStatus, CapabilityPayload, ComposerCommandMode, PendingApproval, PendingCompactMessage, QueuedSteerMessage, ReasoningEffort, SendBehavior, StatusPayload, TaskSummary, ThemeRecord, ThreadGoal, ThreadGoalStatus, ThreadSummary, ToolGroupCollapseMode, UiAgentEvent, UiAssistantPart, UiMessage, UiThread, UiThreadActivityIndicator, UiToolCall, UiWorkspace, UploadedAttachment, UserPreferences, WorkMode } from "./types";
+import type { AuthStatus, CapabilityPayload, ComposerCommandMode, PendingApproval, PendingCompactMessage, QueuedSteerMessage, ReasoningEffort, SendBehavior, StatusPayload, TaskSummary, ThemeRecord, ThreadGoal, ThreadGoalStatus, ThreadSummary, ToolGroupCollapseMode, UiAgentEvent, UiAssistantPart, UiMessage, UiSubagentCall, UiThread, UiThreadActivityIndicator, UiToolCall, UiWorkspace, UploadedAttachment, UserPreferences, WorkMode } from "./types";
 
 const DEFAULT_HISTORY_CACHE_TURNS = 30;
 const MIN_HISTORY_CACHE_TURNS = 20;
@@ -633,6 +633,10 @@ export function App() {
         requestCommandExplanation(event.threadId, event.turnId, toolCall, options);
         return;
       }
+      if (event.threadId && isSubagentItem(item)) {
+        upsertSubagentCall(event.threadId, event.turnId, normalizeSubagentCallFromItem(item));
+        return;
+      }
       if (event.threadId && event.turnId && isUnknownCodexItemEvent(event)) {
         appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
       }
@@ -657,6 +661,10 @@ export function App() {
         const toolCall = normalizeToolCallFromItem(item);
         upsertToolCall(event.threadId, event.turnId, toolCall);
         requestCommandExplanation(event.threadId, event.turnId, toolCall, options);
+        return;
+      }
+      if (event.threadId && isSubagentItem(item)) {
+        upsertSubagentCall(event.threadId, event.turnId, normalizeSubagentCallFromItem(item));
         return;
       }
       if (event.threadId && event.turnId && isUnknownCodexItemEvent(event)) {
@@ -835,6 +843,23 @@ export function App() {
             ...message,
             assistantParts: upsertAssistantToolPart(message.assistantParts, toolCall),
             isStreaming: message.isStreaming || toolCall.status === "inProgress"
+          }))
+        };
+      })
+    })));
+  }
+
+  function upsertSubagentCall(threadId: string, turnId: string | undefined, subagent: UiSubagentCall) {
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => {
+        if (thread.id !== threadId) return thread;
+        return {
+          ...thread,
+          messages: withAssistantTurnMessage(thread, turnId, (message) => ({
+            ...message,
+            assistantParts: upsertAssistantSubagentPart(message.assistantParts, subagent),
+            isStreaming: message.isStreaming || subagent.status === "inProgress"
           }))
         };
       })
@@ -1573,7 +1598,9 @@ export function App() {
       ]);
       const eventMessages = eventsToMessages(events);
       const runningTask = runningTaskFor(threadId, allRunningTasks(tasksRef.current, localRunningTurns));
-      const loadedMessages = eventMessages.length ? mergeUserMessages(threadReadToMessages(thread), eventMessages) : threadReadToMessages(thread);
+      const loadedMessages = mergeThreadAndEventMessages(threadReadToMessages(thread), eventMessages, {
+        preserveTurnIds: runningTask ? [runningTask.turnId] : []
+      });
       const currentMessages = activeThread(workspacesRef.current, threadId)?.messages ?? target.messages;
       const messages = mergeLoadedMessagesWithCurrent(applyRunningTaskToMessages(loadedMessages, runningTask), currentMessages, {
         rollbackTargetUserMessageId: rollbackTargetUserMessageIdsRef.current[threadId]
@@ -1753,6 +1780,13 @@ export function App() {
   const effectiveCwd = activeCwd ?? selectedThread?.cwd;
   const selectedWorkspace = workspaces.find((workspace) => workspace.cwd === effectiveCwd);
   const runningTasks = allRunningTasks(tasks, localRunningTurns);
+  const selectedRootThreadId = selectedThread?.parentThreadId ?? selectedThread?.id;
+  const selectedRootThread = selectedRootThreadId ? activeThread(workspaces, selectedRootThreadId) : null;
+  const selectedSubagentThreads = useMemo(() => {
+    if (!selectedWorkspace || !selectedRootThreadId) return [];
+    return subagentThreadsForParent(selectedWorkspace, selectedRootThreadId, selectedRootThread, runningTasks);
+  }, [selectedWorkspace, selectedRootThreadId, selectedRootThread, runningTasks]);
+  const selectedThreadLocation = selectedThread ? threadLocationLabel(selectedWorkspace, selectedThread) : undefined;
   const selectedIsGenerating = Boolean(runningTaskFor(activeThreadId, runningTasks));
   const selectedRunningTask = activeThreadId ? runningTaskFor(activeThreadId, runningTasks) : undefined;
   const selectedQueuedSteers = useMemo(() => activeThreadId ? [
@@ -1781,6 +1815,10 @@ export function App() {
   }, []);
   const handleRequestCloseMobileRightDrawer = useCallback(() => {
     setMobileRightDrawerOpen(false);
+  }, []);
+  const handleSelectSubagentThread = useCallback((thread: UiThread) => {
+    setWorkspaces((current) => ensureThreadShell(current, thread));
+    void selectThread(thread.id, thread.cwd, { workspaces: ensureThreadShell(workspacesRef.current, thread) });
   }, []);
   const isDraft = !selectedThread || selectedThread.isDraft;
   const isDraftTransitioning = Boolean(draftTransition && selectedThread && draftTransition.threadId === selectedThread.id && !isDraft);
@@ -1898,6 +1936,7 @@ export function App() {
       <section className="workspace">
         <StatusBar
           title={selectedThread?.title ?? "新对话"}
+          subtitle={selectedThreadLocation}
           status={status}
           tasks={tasks}
           capabilities={capabilities}
@@ -1968,6 +2007,9 @@ export function App() {
               onPauseGoal={() => selectedThread ? setGoalStatus(selectedThread.id, "paused") : undefined}
               onResumeGoal={() => selectedThread ? setGoalStatus(selectedThread.id, "active") : undefined}
               onClearGoal={() => selectedThread ? clearGoal(selectedThread.id) : undefined}
+              subagentThreads={selectedSubagentThreads}
+              activeThreadId={activeThreadId}
+              onSelectSubagent={handleSelectSubagentThread}
               isMobileLayout={isMobileLayout}
               mobileRightDrawerOpen={mobileRightDrawerOpen}
               onToggleMobileRightDrawer={() => setMobileRightDrawerOpen((current) => !current)}
@@ -2027,31 +2069,6 @@ export function App() {
       </section>
     </div>
   );
-}
-
-function mergeUserMessages(threadMessages: UiMessage[], eventMessages: UiMessage[]): UiMessage[] {
-  if (!threadMessages.length) return eventMessages;
-  if (!eventMessages.length) return threadMessages;
-
-  const eventMessagesByTurn = new Map<string, UiMessage[]>();
-  for (const eventMessage of eventMessages) {
-    if (eventMessage.turnId) {
-      eventMessagesByTurn.set(eventMessage.turnId, [...(eventMessagesByTurn.get(eventMessage.turnId) ?? []), eventMessage]);
-    }
-  }
-
-  const usedTurns = new Set<string>();
-  const result: UiMessage[] = [];
-  for (const threadMessage of threadMessages) {
-    if (threadMessage.role === "assistant" && threadMessage.turnId && eventMessagesByTurn.has(threadMessage.turnId)) {
-      result.push(...(eventMessagesByTurn.get(threadMessage.turnId) ?? []));
-      usedTurns.add(threadMessage.turnId);
-      continue;
-    }
-    result.push(threadMessage);
-  }
-
-  return result;
 }
 
 function applyRunningTaskToMessages(messages: UiMessage[], task: TaskSummary | undefined): UiMessage[] {
@@ -2139,6 +2156,14 @@ function upsertAssistantToolPart(current: UiAssistantPart[] | undefined, toolCal
     return [...parts, { type: "tool", id: toolCall.id, toolCall }];
   }
   return parts.map((part) => part.type === "tool" && part.id === toolCall.id ? { ...part, toolCall } : part);
+}
+
+function upsertAssistantSubagentPart(current: UiAssistantPart[] | undefined, subagent: UiSubagentCall): UiAssistantPart[] {
+  const parts = current ?? [];
+  if (!parts.some((part) => part.type === "subagent" && part.id === subagent.id)) {
+    return [...parts, { type: "subagent", id: subagent.id, subagent }];
+  }
+  return parts.map((part) => part.type === "subagent" && part.id === subagent.id ? { ...part, subagent } : part);
 }
 
 function updateAssistantToolPart(current: UiAssistantPart[] | undefined, itemId: string, updater: (toolCall: UiToolCall) => UiToolCall): UiAssistantPart[] {
@@ -2380,6 +2405,8 @@ function mergeThreadsIntoProjects(projects: Array<{ cwd: string; name: string; u
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((thread) => {
         const existingThread = existing?.threads.find((item) => item.id === thread.id);
+        const parentThreadId = thread.parentThreadId ?? existingThread?.parentThreadId;
+        const threadSource = thread.threadSource ?? existingThread?.threadSource;
         return {
           id: thread.id,
           cwd: thread.cwd,
@@ -2388,6 +2415,11 @@ function mergeThreadsIntoProjects(projects: Array<{ cwd: string; name: string; u
           pinned: thread.pinned ?? existingThread?.pinned,
           order: typeof thread.order === "number" ? thread.order : existingThread?.order,
           status: normalizeThreadStatus(thread.status ?? existingThread?.status),
+          parentThreadId,
+          threadSource,
+          agentNickname: thread.agentNickname ?? existingThread?.agentNickname,
+          agentRole: thread.agentRole ?? existingThread?.agentRole,
+          isSubagent: Boolean(thread.isSubagent || existingThread?.isSubagent || parentThreadId || threadSource === "subagent"),
           isDraft: false,
           needsResume: existingThread?.needsResume ?? true,
           isLoadingHistory: existingThread?.isLoadingHistory ?? false,
@@ -2397,7 +2429,7 @@ function mergeThreadsIntoProjects(projects: Array<{ cwd: string; name: string; u
     const localDrafts = sortUiThreads((existing?.threads ?? []).filter((thread) => thread.isDraft && !projectThreads.some((item) => item.id === thread.id)));
     return {
       ...projectToWorkspace(project),
-      runningCount: projectThreads.filter((thread) => threads.find((item) => item.id === thread.id)?.status === "running").length,
+      runningCount: projectThreads.filter((thread) => !thread.isSubagent && threads.find((item) => item.id === thread.id)?.status === "running").length,
       threads: sortUiThreads([...localDrafts, ...projectThreads])
     };
   });
@@ -2425,6 +2457,37 @@ function upsertPendingThreadShell(workspaces: UiWorkspace[], shell: PendingThrea
       threads: sortUiThreads([nextThread, ...filtered])
     };
   });
+}
+
+function ensureThreadShell(workspaces: UiWorkspace[], shell: UiThread): UiWorkspace[] {
+  return workspaces.map((workspace) => {
+    if (workspace.cwd !== shell.cwd) return workspace;
+    if (workspace.threads.some((thread) => thread.id === shell.id)) {
+      return {
+        ...workspace,
+        threads: workspace.threads.map((thread) => thread.id === shell.id ? mergeThreadShell(thread, shell) : thread)
+      };
+    }
+    return {
+      ...workspace,
+      updatedAt: Math.max(workspace.updatedAt, shell.updatedAt),
+      threads: sortUiThreads([...workspace.threads, shell])
+    };
+  });
+}
+
+function mergeThreadShell(current: UiThread, incoming: UiThread): UiThread {
+  return {
+    ...incoming,
+    ...current,
+    parentThreadId: current.parentThreadId ?? incoming.parentThreadId,
+    threadSource: current.threadSource ?? incoming.threadSource,
+    agentNickname: current.agentNickname ?? incoming.agentNickname,
+    agentRole: current.agentRole ?? incoming.agentRole,
+    isSubagent: current.isSubagent ?? incoming.isSubagent,
+    status: incoming.status ?? current.status,
+    updatedAt: Math.max(current.updatedAt, incoming.updatedAt)
+  };
 }
 
 function sortUiThreads(threads: UiThread[]): UiThread[] {
@@ -2537,6 +2600,117 @@ function activeThread(workspaces: UiWorkspace[], threadId: string | null) {
     if (thread) return thread;
   }
   return null;
+}
+
+function subagentThreadsForParent(workspace: UiWorkspace, parentThreadId: string, parentThread: UiThread | null, runningTasks: TaskSummary[]): UiThread[] {
+  const byId = new Map<string, UiThread>();
+  for (const thread of workspace.threads) {
+    if (thread.isSubagent && thread.parentThreadId === parentThreadId) {
+      byId.set(thread.id, thread);
+    }
+  }
+  for (const subagent of subagentCallsFromThread(parentThread)) {
+    const ids = subagentThreadIds(subagent);
+    for (const id of ids) {
+      const existing = byId.get(id);
+      byId.set(id, mergeThreadShell(existing ?? subagentThreadShell(workspace.cwd, parentThreadId, id), subagentThreadPatch(existing, subagent, runningTasks)));
+    }
+  }
+  return sortUiThreads([...byId.values()]);
+}
+
+function subagentCallsFromThread(thread: UiThread | null): UiSubagentCall[] {
+  if (!thread) return [];
+  const calls: UiSubagentCall[] = [];
+  for (const message of thread.messages) {
+    for (const part of message.assistantParts ?? []) {
+      if (part.type === "subagent") calls.push(part.subagent);
+    }
+  }
+  return calls;
+}
+
+function subagentThreadIds(subagent: UiSubagentCall): string[] {
+  return [
+    subagent.agentThreadId,
+    ...(subagent.receiverThreadIds ?? []),
+    looksLikeThreadId(subagent.id) ? subagent.id : undefined,
+    ...Object.keys(subagent.agentsStates ?? {}).filter(looksLikeThreadId)
+  ].filter((value, index, values): value is string => Boolean(value && values.indexOf(value) === index));
+}
+
+function subagentThreadPatch(existing: UiThread | undefined, subagent: UiSubagentCall, runningTasks: TaskSummary[]): UiThread {
+  const id = subagentThreadIds(subagent)[0] ?? existing?.id ?? subagent.id;
+  const status = runningTaskFor(id, runningTasks) ? "running" : subagentCallThreadStatus(subagent, existing?.status);
+  return {
+    id,
+    cwd: existing?.cwd ?? "",
+    title: existing?.title ?? shortThreadId(id),
+    updatedAt: Date.now(),
+    status,
+    parentThreadId: existing?.parentThreadId,
+    threadSource: "subagent",
+    agentNickname: existing?.agentNickname,
+    agentRole: existing?.agentRole,
+    isSubagent: true,
+    isDraft: false,
+    needsResume: true,
+    isLoadingHistory: false,
+    messages: existing?.messages ?? []
+  };
+}
+
+function subagentThreadShell(cwd: string, parentThreadId: string, id: string): UiThread {
+  return {
+    id,
+    cwd,
+    title: shortThreadId(id),
+    updatedAt: Date.now(),
+    status: "running",
+    parentThreadId,
+    threadSource: "subagent",
+    isSubagent: true,
+    isDraft: false,
+    needsResume: true,
+    isLoadingHistory: false,
+    messages: []
+  };
+}
+
+function subagentCallThreadStatus(subagent: UiSubagentCall, fallback: UiThread["status"] = "completed"): UiThread["status"] {
+  const statuses = [
+    subagent.status,
+    ...Object.values(subagent.agentsStates ?? {}).map((state) => state.status),
+    subagent.kind
+  ].filter(Boolean).map(String);
+  if (statuses.some((status) => ["failed", "errored", "notFound", "interrupted"].includes(status))) return "failed";
+  if (statuses.some((status) => ["inProgress", "running", "pendingInit", "started", "interacted"].includes(status))) return "running";
+  if (statuses.some((status) => ["completed", "shutdown"].includes(status))) return "completed";
+  return fallback;
+}
+
+function looksLikeThreadId(value: string | undefined): value is string {
+  return Boolean(value && /^019[0-9a-f-]{8,}$/i.test(value));
+}
+
+function threadLocationLabel(workspace: UiWorkspace | undefined, thread: UiThread): string {
+  const workspaceName = workspace?.name ?? pathBasename(thread.cwd);
+  if (thread.isSubagent) {
+    return [
+      workspaceName,
+      "子代理",
+      [thread.agentNickname ?? shortThreadId(thread.id), thread.agentRole].filter(Boolean).join(" · ")
+    ].filter(Boolean).join(" / ");
+  }
+  return `${workspaceName} / ${thread.cwd}`;
+}
+
+function pathBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function shortThreadId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
 }
 
 function titleFromMessage(text: string): string {

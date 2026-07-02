@@ -1,4 +1,4 @@
-import type { UiMessage, UiToolCall } from "./types.js";
+import type { UiMessage, UiSubagentCall, UiToolCall } from "./types.js";
 
 export interface CodexEventLike {
   type?: string;
@@ -59,6 +59,10 @@ export function isCodexToolItem(item: Record<string, unknown> | undefined): item
   ].includes(String(item.type)));
 }
 
+export function isSubagentItem(item: Record<string, unknown> | undefined): item is Record<string, unknown> {
+  return Boolean(item && (String(item.type) === "collabAgentToolCall" || String(item.type) === "subAgentActivity"));
+}
+
 export function isContextCompactionItem(item: Record<string, unknown> | undefined): boolean {
   return Boolean(item && String(item.type) === "contextCompaction");
 }
@@ -114,6 +118,26 @@ export function normalizeToolCallFromItem(item: Record<string, unknown>): UiTool
     exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
     durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
     commandExplanation: typeof item.commandExplanation === "string" ? item.commandExplanation : undefined
+  };
+}
+
+export function normalizeSubagentCallFromItem(item: Record<string, unknown>): UiSubagentCall {
+  const type = String(item.type) === "subAgentActivity" ? "subAgentActivity" : "collabAgentToolCall";
+  return {
+    id: String(item.id ?? item.agentThreadId ?? item.senderThreadId ?? `${type}:unknown`),
+    type,
+    tool: typeof item.tool === "string" ? item.tool : undefined,
+    agentPath: typeof item.agentPath === "string" ? item.agentPath : undefined,
+    agentThreadId: typeof item.agentThreadId === "string" ? item.agentThreadId : undefined,
+    receiverThreadIds: Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((value): value is string => typeof value === "string") : undefined,
+    senderThreadId: typeof item.senderThreadId === "string" ? item.senderThreadId : undefined,
+    prompt: typeof item.prompt === "string" || item.prompt === null ? item.prompt : undefined,
+    model: typeof item.model === "string" || item.model === null ? item.model : undefined,
+    reasoningEffort: typeof item.reasoningEffort === "string" || item.reasoningEffort === null ? item.reasoningEffort : undefined,
+    status: typeof item.status === "string" ? item.status : undefined,
+    agentsStates: normalizeAgentStates(item.agentsStates),
+    kind: typeof item.kind === "string" ? item.kind : undefined,
+    details: item
   };
 }
 
@@ -209,6 +233,20 @@ function readFileChanges(value: unknown): UiToolCall["changes"] {
     movePath: typeof change?.kind?.move_path === "string" ? change.kind.move_path : null,
     diff: typeof change?.diff === "string" ? change.diff : undefined
   })).filter((change) => change.path);
+}
+
+function normalizeAgentStates(value: unknown): Record<string, { status?: string; message?: string | null }> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const output: Record<string, { status?: string; message?: string | null }> = {};
+  for (const [key, state] of Object.entries(value as Record<string, unknown>)) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) continue;
+    const record = state as Record<string, unknown>;
+    output[key] = {
+      status: typeof record.status === "string" ? record.status : undefined,
+      message: typeof record.message === "string" || record.message === null ? record.message : undefined
+    };
+  }
+  return Object.keys(output).length ? output : undefined;
 }
 
 function fileChangeTitle(item: Record<string, unknown>): string {

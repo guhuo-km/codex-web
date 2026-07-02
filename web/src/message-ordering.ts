@@ -65,6 +65,38 @@ export function mergeLoadedMessagesWithCurrent(
   return merged;
 }
 
+export function mergeThreadAndEventMessages(
+  threadMessages: UiMessage[],
+  eventMessages: UiMessage[],
+  options: { preserveTurnIds?: string[] } = {}
+): UiMessage[] {
+  if (!eventMessages.length) return threadMessages;
+  const preservedTurnIds = new Set(options.preserveTurnIds ?? []);
+  const threadTurnIds = new Set(threadMessages.map((message) => message.turnId).filter(Boolean) as string[]);
+  const retainedEventMessages = eventMessages.filter((message) => (
+    message.turnId && (threadTurnIds.has(message.turnId) || preservedTurnIds.has(message.turnId))
+  ));
+  if (!threadMessages.length) return retainedEventMessages;
+  if (!retainedEventMessages.length) return threadMessages;
+
+  const eventMessagesByTurn = new Map<string, UiMessage[]>();
+  for (const eventMessage of retainedEventMessages) {
+    if (eventMessage.turnId) {
+      eventMessagesByTurn.set(eventMessage.turnId, [...(eventMessagesByTurn.get(eventMessage.turnId) ?? []), eventMessage]);
+    }
+  }
+
+  const result: UiMessage[] = [];
+  for (const threadMessage of threadMessages) {
+    if (threadMessage.role === "assistant" && threadMessage.turnId && eventMessagesByTurn.has(threadMessage.turnId)) {
+      result.push(...(eventMessagesByTurn.get(threadMessage.turnId) ?? []));
+      continue;
+    }
+    result.push(threadMessage);
+  }
+  return result;
+}
+
 export function upsertContextCompactionMarkerMessage(messages: UiMessage[], marker: UiMessage): UiMessage[] {
   const existingIndex = messages.findIndex((message) => (
     message.systemMarker === "contextCompaction" &&

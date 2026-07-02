@@ -694,8 +694,12 @@ async function mergeBridgeAndLocalThreads(
     console.warn("Failed to read local Codex session history", error);
   }
   const byId = new Map<string, any>();
-  for (const thread of localThreads) byId.set(thread.id, thread);
-  for (const thread of bridgeThreads) byId.set(thread.id, thread);
+  for (const thread of localThreads) byId.set(thread.id, normalizeThreadSummary(thread));
+  for (const thread of bridgeThreads) {
+    const normalized = normalizeThreadSummary(thread);
+    const existing = byId.get(normalized.id);
+    byId.set(normalized.id, existing ? mergeThreadSummaries(existing, normalized) : normalized);
+  }
   const metadataById = new Map((input.metadata ?? []).map((record) => [record.id, record]));
   const hiddenIds = new Set((input.metadata ?? []).filter((record) => record.hidden).map((record) => record.id));
   return [...byId.values()]
@@ -705,6 +709,37 @@ async function mergeBridgeAndLocalThreads(
       return metadata ? { ...thread, pinned: metadata.pinned, order: metadata.order, hidden: metadata.hidden } : thread;
     })
     .sort((a, b) => compareThreadOrder(a, b));
+}
+
+function mergeThreadSummaries(existing: any, incoming: any): any {
+  return {
+    ...existing,
+    ...incoming,
+    parentThreadId: incoming.parentThreadId ?? existing.parentThreadId,
+    threadSource: incoming.threadSource ?? existing.threadSource,
+    agentNickname: incoming.agentNickname ?? existing.agentNickname,
+    agentRole: incoming.agentRole ?? existing.agentRole,
+    isSubagent: Boolean(incoming.isSubagent || existing.isSubagent)
+  };
+}
+
+function normalizeThreadSummary(thread: any): any {
+  const parentThreadId = stringValue(thread.parentThreadId) ?? stringValue(thread.parent_thread_id);
+  const threadSource = stringValue(thread.threadSource) ?? stringValue(thread.thread_source);
+  const agentNickname = stringValue(thread.agentNickname) ?? stringValue(thread.agent_nickname);
+  const agentRole = stringValue(thread.agentRole) ?? stringValue(thread.agent_role);
+  return {
+    ...thread,
+    parentThreadId,
+    threadSource,
+    agentNickname,
+    agentRole,
+    isSubagent: Boolean(thread.isSubagent || parentThreadId || threadSource === "subagent")
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function compareThreadOrder(a: any, b: any): number {

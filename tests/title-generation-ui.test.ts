@@ -8,6 +8,7 @@ describe("TitleGenerationSettingsPanel", () => {
     const html = renderToStaticMarkup(React.createElement(TitleGenerationSettingsPanel));
 
     expect(html).toContain("AI 辅助");
+    expect(html).toContain("为命令解释等轻量辅助功能配置独立的小模型接口。");
     expect(html).toContain("API URL");
     expect(html).toContain("API Key");
     expect(html).toContain("模型");

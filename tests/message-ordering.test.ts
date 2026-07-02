@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { appendOptimisticTurnMessages, messagesBeforeRollbackTarget, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "../web/src/message-ordering.js";
+import { appendOptimisticTurnMessages, mergeThreadAndEventMessages, messagesBeforeRollbackTarget, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "../web/src/message-ordering.js";
 import type { UiMessage } from "../web/src/types.js";
 
 describe("upsertContextCompactionMarkerMessage", () => {
@@ -223,6 +223,54 @@ describe("mergeLoadedMessagesWithCurrent", () => {
     const next = mergeLoadedMessagesWithCurrent(staleLoaded, current, { rollbackTargetUserMessageId: "user-turn-2" });
 
     expect(next.map((message) => message.id)).toEqual(["user-turn-1", "assistant-turn-turn-1"]);
+  });
+});
+
+describe("mergeThreadAndEventMessages", () => {
+  test("does not resurrect completed event-only turns after authoritative thread history is empty", () => {
+    const eventMessages: UiMessage[] = [
+      {
+        id: "assistant-turn-turn-1",
+        role: "assistant",
+        turnId: "turn-1",
+        text: "旧回复",
+        createdAt: 1000,
+        turnCompletedAt: 1100
+      }
+    ];
+
+    expect(mergeThreadAndEventMessages([], eventMessages)).toEqual([]);
+  });
+
+  test("keeps event-only running turns while thread history is still stale", () => {
+    const eventMessages: UiMessage[] = [
+      {
+        id: "assistant-turn-turn-2",
+        role: "assistant",
+        turnId: "turn-2",
+        text: "",
+        createdAt: 2000,
+        isStreaming: true
+      }
+    ];
+
+    expect(mergeThreadAndEventMessages([], eventMessages, { preserveTurnIds: ["turn-2"] })).toEqual(eventMessages);
+  });
+
+  test("uses event details only for turns still present in thread history", () => {
+    const threadMessages: UiMessage[] = [
+      { id: "user-turn-1", role: "user", turnId: "turn-1", text: "继续", createdAt: 1000 },
+      { id: "assistant-thread-turn-1", role: "assistant", turnId: "turn-1", text: "旧的线程回复", createdAt: 1100 }
+    ];
+    const eventMessages: UiMessage[] = [
+      { id: "assistant-turn-turn-1", role: "assistant", turnId: "turn-1", text: "事件里的详细回复", createdAt: 1100 },
+      { id: "assistant-turn-rolled-back", role: "assistant", turnId: "rolled-back", text: "不该复活", createdAt: 900 }
+    ];
+
+    expect(mergeThreadAndEventMessages(threadMessages, eventMessages).map((message) => message.id)).toEqual([
+      "user-turn-1",
+      "assistant-turn-turn-1"
+    ]);
   });
 });
 

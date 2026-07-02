@@ -4,6 +4,7 @@ import type { CapabilityPayload, McpServerCapability, StatusPayload, TaskSummary
 
 interface StatusBarProps {
   title: string;
+  subtitle?: string;
   status: StatusPayload | null;
   tasks: TaskSummary[];
   onRefresh: () => void;
@@ -15,6 +16,7 @@ interface StatusBarProps {
 
 export function StatusBar({
   title,
+  subtitle,
   status,
   tasks: _tasks,
   onRefresh,
@@ -51,7 +53,10 @@ export function StatusBar({
         >
           {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
         </button>
-        <h1>{title || "新对话"}</h1>
+        <span className="conversation-title-copy">
+          <h1>{title || "新对话"}</h1>
+          {subtitle ? <p>{subtitle}</p> : null}
+        </span>
       </div>
       <div className="conversation-tools">
         <span className="mini-pill">

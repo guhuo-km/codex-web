@@ -13,7 +13,7 @@ import { terminalWsUrl } from "../api";
 import { formatDuration, formatTokenCount } from "../display-format";
 import { diffStatsForToolCall, fileChangeViews } from "../file-change-display";
 import { appendTurnWindow, followLatestTurnWindow, latestTurnWindow, normalizeTurnWindow, prependTurnWindow, type TurnWindow } from "../turn-window";
-import type { QueuedSteerMessage, TaskSummary, ThreadGoal, ToolGroupCollapseMode, UiAgentEvent, UiMessage, UiThread, UiToolCall } from "../types";
+import type { QueuedSteerMessage, TaskSummary, ThreadGoal, ToolGroupCollapseMode, UiAgentEvent, UiMessage, UiSubagentCall, UiThread, UiToolCall } from "../types";
 
 const INITIAL_VISIBLE_TURNS = 20;
 const TURN_WINDOW_BATCH_SIZE = 10;
@@ -36,6 +36,9 @@ interface ChatPaneProps {
   onPauseGoal?: () => void | Promise<void>;
   onResumeGoal?: () => void | Promise<void>;
   onClearGoal?: () => void | Promise<void>;
+  subagentThreads?: UiThread[];
+  activeThreadId?: string | null;
+  onSelectSubagent?: (thread: UiThread) => void;
   isMobileLayout?: boolean;
   mobileRightDrawerOpen?: boolean;
   onToggleMobileRightDrawer?: () => void;
@@ -59,6 +62,9 @@ export const ChatPane = memo(function ChatPane({
   onPauseGoal,
   onResumeGoal,
   onClearGoal,
+  subagentThreads = [],
+  activeThreadId,
+  onSelectSubagent,
   isMobileLayout = false,
   mobileRightDrawerOpen = false,
   onToggleMobileRightDrawer,
@@ -321,6 +327,9 @@ export const ChatPane = memo(function ChatPane({
           onPauseGoal={onPauseGoal}
           onResumeGoal={onResumeGoal}
           onClearGoal={onClearGoal}
+          subagentThreads={subagentThreads}
+          activeThreadId={activeThreadId}
+          onSelectSubagent={onSelectSubagent}
         />
       ) : null}
       {previewImage ? (
@@ -579,6 +588,7 @@ function ImagePreviewOverlay({ image, onClose }: { image: { src: string; name: s
 
 function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: NonNullable<UiMessage["assistantParts"]>; toolGroupCollapseMode: ToolGroupCollapseMode; isStreaming: boolean }) {
   const [openToolId, setOpenToolId] = useState<string | null>(null);
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
   const [toggledToolGroups, setToggledToolGroups] = useState<Set<string>>(() => new Set());
   const partGroups = useMemo(() => groupAssistantParts(parts), [parts]);
 
@@ -605,6 +615,16 @@ function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: 
         if (group.kind === "reasoning") return <ReasoningBlock key={group.part.id} text={group.part.text} summary={group.part.summary} />;
         if (group.kind === "steer") return <SteerInline key={group.part.id} item={group.part} />;
         if (group.kind === "agentEvent") return <AgentEventBlock key={group.part.id} event={group.part.event} />;
+        if (group.kind === "subagent") {
+          return (
+            <SubagentCallCard
+              key={group.part.id}
+              subagent={group.part.subagent}
+              open={openSubagentId === group.part.id}
+              onToggle={() => setOpenSubagentId((current) => current === group.part.id ? null : group.part.id)}
+            />
+          );
+        }
         if (group.parts.length === 1) {
           const part = group.parts[0]!;
           return (
@@ -638,6 +658,34 @@ function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: 
         );
       })}
     </div>
+  );
+}
+
+function SubagentCallCard({ subagent, open, onToggle }: { subagent: UiSubagentCall; open: boolean; onToggle: () => void }) {
+  const detailItems = subagentDetailItems(subagent);
+  const status = subagentStatus(subagent);
+  return (
+    <section className={`subagent-call-card ${statusClass(status)} ${open ? "open" : ""}`}>
+      <button className="subagent-call-summary" type="button" onClick={onToggle} aria-expanded={open}>
+        <span className="subagent-call-icon" aria-hidden="true" />
+        <span className="subagent-call-main">
+          <span className="subagent-call-title" title={subagentTitle(subagent)}>{subagentTitle(subagent)}</span>
+          <span className="subagent-call-subtitle">
+            {subagentSubtitle(subagent)}
+          </span>
+        </span>
+      </button>
+      <div className={`subagent-call-detail ${open ? "open" : "closed"}`} aria-hidden={!open}>
+        <div className="subagent-call-detail-inner">
+          {detailItems.map((item) => (
+            <div className="subagent-call-kv" key={item.label}>
+              <span>{item.label}</span>
+              {item.kind === "code" ? <code>{item.value}</code> : <pre>{item.value}</pre>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -716,6 +764,7 @@ type AssistantPartGroup =
   | { kind: "reasoning"; part: Extract<AssistantPart, { type: "reasoning" }> }
   | { kind: "steer"; part: Extract<AssistantPart, { type: "steer" }> }
   | { kind: "agentEvent"; part: Extract<AssistantPart, { type: "agentEvent" }> }
+  | { kind: "subagent"; part: Extract<AssistantPart, { type: "subagent" }> }
   | { kind: "tools"; id: string; parts: Array<Extract<AssistantPart, { type: "tool" }>> };
 
 function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): AssistantPartGroup[] {
@@ -744,6 +793,9 @@ function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): A
     } else if (part.type === "agentEvent") {
       flushTools();
       groups.push({ kind: "agentEvent", part });
+    } else if (part.type === "subagent") {
+      flushTools();
+      groups.push({ kind: "subagent", part });
     } else {
       flushTools();
       groups.push({ kind: "text", part });
@@ -751,6 +803,92 @@ function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): A
   }
   flushTools();
   return groups;
+}
+
+function subagentTitle(subagent: UiSubagentCall): string {
+  const label = subagentAgentLabel(subagent);
+  const action = subagent.type === "subAgentActivity"
+    ? subagentActivityLabel(subagent.kind)
+    : subagentToolLabel(subagent.tool);
+  return label ? `${action} · ${label}` : action;
+}
+
+function subagentSubtitle(subagent: UiSubagentCall): string {
+  const parts = [
+    subagent.prompt ? compactWhitespace(subagent.prompt) : "",
+    subagentStatusLabel(subagentStatus(subagent))
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function subagentStatus(subagent: UiSubagentCall): string | undefined {
+  if (subagent.status) return subagent.status;
+  const states = Object.values(subagent.agentsStates ?? {});
+  if (states.some((state) => state.status === "errored" || state.status === "notFound")) return "failed";
+  if (states.some((state) => state.status === "running" || state.status === "pendingInit")) return "inProgress";
+  if (states.some((state) => state.status === "completed" || state.status === "shutdown")) return "completed";
+  if (subagent.kind === "interrupted") return "failed";
+  if (subagent.kind === "started" || subagent.kind === "interacted") return "inProgress";
+  return undefined;
+}
+
+function subagentAgentLabel(subagent: UiSubagentCall): string {
+  const ids = [
+    subagent.agentThreadId,
+    ...(subagent.receiverThreadIds ?? []),
+    ...Object.keys(subagent.agentsStates ?? {}),
+    looksLikeThreadId(subagent.id) ? subagent.id : undefined
+  ].filter((value, index, values): value is string => Boolean(value && values.indexOf(value) === index));
+  return ids.join("、");
+}
+
+function subagentToolLabel(tool: string | undefined): string {
+  if (tool === "spawnAgent") return "启动子代理";
+  if (tool === "sendInput") return "引导子代理";
+  if (tool === "resumeAgent") return "继续子代理";
+  if (tool === "wait") return "等待子代理";
+  if (tool === "closeAgent") return "关闭子代理";
+  return "子代理调用";
+}
+
+function subagentActivityLabel(kind: string | undefined): string {
+  if (kind === "started") return "子代理已启动";
+  if (kind === "interacted") return "子代理交互";
+  if (kind === "interrupted") return "子代理已中断";
+  return "子代理活动";
+}
+
+function subagentStatusLabel(status: string | undefined): string {
+  if (status === "completed" || status === "shutdown") return "已完成";
+  if (status === "failed" || status === "errored" || status === "notFound") return "失败";
+  if (status === "interrupted") return "已中断";
+  if (status === "inProgress" || status === "running" || status === "pendingInit") return "运行中";
+  return status ?? "";
+}
+
+function looksLikeThreadId(value: string | undefined): value is string {
+  return Boolean(value && /^019[0-9a-f-]{8,}$/i.test(value));
+}
+
+function subagentDetailItems(subagent: UiSubagentCall): Array<{ label: string; value: string; kind?: "code" }> {
+  return [
+    { label: "ID", value: subagent.id, kind: "code" },
+    subagent.tool ? { label: "动作", value: subagentToolLabel(subagent.tool), kind: "code" as const } : null,
+    subagent.kind ? { label: "活动", value: subagentActivityLabel(subagent.kind), kind: "code" as const } : null,
+    subagent.agentThreadId ? { label: "子代理线程", value: subagent.agentThreadId, kind: "code" as const } : null,
+    subagent.receiverThreadIds?.length ? { label: "接收线程", value: subagent.receiverThreadIds.join("\n"), kind: "code" as const } : null,
+    subagent.senderThreadId ? { label: "发起线程", value: subagent.senderThreadId, kind: "code" as const } : null,
+    subagent.model ? { label: "模型", value: subagent.model, kind: "code" as const } : null,
+    subagent.reasoningEffort ? { label: "推理强度", value: subagent.reasoningEffort, kind: "code" as const } : null,
+    subagent.prompt ? { label: "任务", value: subagent.prompt } : null,
+    subagent.agentsStates ? { label: "状态", value: formatJsonValue(subagent.agentsStates) } : null,
+    { label: "详情", value: formatJsonValue(subagent.details) }
+  ].filter((item): item is { label: string; value: string; kind?: "code" } => Boolean(item));
+}
+
+function compactWhitespace(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > 96 ? `${text.slice(0, 96)}...` : text;
 }
 
 function toolGroupSummary(toolCalls: UiToolCall[]): string {
@@ -1141,6 +1279,7 @@ function ReasoningBlock({ text, summary = true }: { text: string; summary?: bool
 }
 
 function AgentEventBlock({ event }: { event: UiAgentEvent }) {
+  const [open, setOpen] = useState(false);
   const details = event.details === undefined ? "" : formatJsonValue(event.details);
   const summaryContent = (
     <>
@@ -1157,10 +1296,12 @@ function AgentEventBlock({ event }: { event: UiAgentEvent }) {
   return (
     <section className={`agent-event-block ${event.tone}`}>
       {details ? (
-        <details className="agent-event-details">
-          <summary className="agent-event-summary">{summaryContent}</summary>
-          <pre>{details}</pre>
-        </details>
+        <div className={`agent-event-disclosure ${open ? "open" : ""}`}>
+          <button className="agent-event-summary" type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+            {summaryContent}
+          </button>
+          {open ? <pre>{details}</pre> : null}
+        </div>
       ) : (
         <div className="agent-event-summary">{summaryContent}</div>
       )}
@@ -1441,7 +1582,10 @@ function RightDrawer({
   onCreateGoal,
   onPauseGoal,
   onResumeGoal,
-  onClearGoal
+  onClearGoal,
+  subagentThreads,
+  activeThreadId,
+  onSelectSubagent
 }: {
   turns: MessageTurn[];
   cwd?: string;
@@ -1457,6 +1601,9 @@ function RightDrawer({
   onPauseGoal?: () => void | Promise<void>;
   onResumeGoal?: () => void | Promise<void>;
   onClearGoal?: () => void | Promise<void>;
+  subagentThreads?: UiThread[];
+  activeThreadId?: string | null;
+  onSelectSubagent?: (thread: UiThread) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"goal" | "terminal">("goal");
   return (
@@ -1482,13 +1629,20 @@ function RightDrawer({
               </button>
             </div>
             {activeTab === "goal" ? (
-              <GoalPanel
-                goal={goal}
-                onCreateGoal={onCreateGoal}
-                onPauseGoal={onPauseGoal}
-                onResumeGoal={onResumeGoal}
-                onClearGoal={onClearGoal}
-              />
+              <>
+                <GoalPanel
+                  goal={goal}
+                  onCreateGoal={onCreateGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onClearGoal={onClearGoal}
+                />
+                <SubagentThreadPanel
+                  threads={subagentThreads ?? []}
+                  activeThreadId={activeThreadId}
+                  onSelectSubagent={onSelectSubagent}
+                />
+              </>
             ) : (
               <TerminalPanel cwd={cwd} />
             )}
@@ -1588,6 +1742,79 @@ function GoalPanel({
       )}
     </section>
   );
+}
+
+function SubagentThreadPanel({
+  threads,
+  activeThreadId,
+  onSelectSubagent
+}: {
+  threads: UiThread[];
+  activeThreadId?: string | null;
+  onSelectSubagent?: (thread: UiThread) => void;
+}) {
+  return (
+    <section className="right-drawer-subagents" aria-label="子代理">
+      <div className="right-drawer-section-heading">
+        <span>子代理</span>
+        {threads.length ? <strong>{threads.length}</strong> : null}
+      </div>
+      {threads.length ? (
+        <div className="right-drawer-subagent-list">
+          {threads.map((thread) => {
+            const status = subagentThreadStatus(thread);
+            return (
+              <button
+                key={thread.id}
+                className={thread.id === activeThreadId ? "right-drawer-subagent-item active" : "right-drawer-subagent-item"}
+                type="button"
+                onClick={() => onSelectSubagent?.(thread)}
+              >
+                <span className={`right-drawer-subagent-dot ${status}`} title={subagentThreadStatusLabel(status)} />
+                <span className="right-drawer-subagent-main">
+                  <span className="right-drawer-subagent-title" title={thread.id}>{subagentThreadTitle(thread)}</span>
+                  <span className="right-drawer-subagent-subtitle">{subagentThreadSubtitle(thread, status)}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="right-drawer-subagent-empty">暂无子代理</p>
+      )}
+    </section>
+  );
+}
+
+function subagentThreadTitle(thread: UiThread): string {
+  return middleEllipsis(thread.id, 13, 12);
+}
+
+function subagentThreadSubtitle(thread: UiThread, status: "running" | "completed" | "failed"): string {
+  return [
+    subagentThreadStatusLabel(status),
+    [thread.agentNickname, thread.agentRole].filter(Boolean).join(" · ")
+  ].filter(Boolean).join(" · ");
+}
+
+function subagentThreadStatus(thread: UiThread): "running" | "completed" | "failed" {
+  if (thread.status === "running" || thread.status === "failed") return thread.status;
+  return "completed";
+}
+
+function subagentThreadStatusLabel(status: "running" | "completed" | "failed"): string {
+  if (status === "running") return "正在工作";
+  if (status === "failed") return "失败";
+  return "已完成";
+}
+
+function shortId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+function middleEllipsis(value: string, headLength: number, tailLength: number): string {
+  if (value.length <= headLength + tailLength + 3) return value;
+  return `${value.slice(0, headLength)}...${value.slice(-tailLength)}`;
 }
 
 interface TerminalSessionSummary {

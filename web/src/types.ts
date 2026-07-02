@@ -23,6 +23,11 @@ export interface ThreadSummary {
   pinned?: boolean;
   order?: number;
   status?: string;
+  parentThreadId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  isSubagent?: boolean;
 }
 
 export interface UiThread {
@@ -33,6 +38,11 @@ export interface UiThread {
   pinned?: boolean;
   order?: number;
   status?: UiThreadStatus;
+  parentThreadId?: string;
+  threadSource?: string;
+  agentNickname?: string;
+  agentRole?: string;
+  isSubagent?: boolean;
   lastError?: string;
   isDraft: boolean;
   needsResume?: boolean;
@@ -74,6 +84,7 @@ export interface UiTokenUsage {
 export type UiAssistantPart =
   | { type: "text"; id: string; text: string }
   | { type: "tool"; id: string; toolCall: UiToolCall }
+  | { type: "subagent"; id: string; subagent: UiSubagentCall }
   | { type: "reasoning"; id: string; text: string; summary?: boolean }
   | { type: "agentEvent"; id: string; event: UiAgentEvent }
   | { type: "steer"; id: string; text: string; status: SteerMessageStatus };
@@ -108,6 +119,23 @@ export interface UiToolCall {
   exitCode?: number | null;
   durationMs?: number | null;
   commandExplanation?: string;
+}
+
+export interface UiSubagentCall {
+  id: string;
+  type: "collabAgentToolCall" | "subAgentActivity";
+  tool?: string;
+  agentPath?: string;
+  agentThreadId?: string;
+  receiverThreadIds?: string[];
+  senderThreadId?: string;
+  prompt?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  status?: string;
+  agentsStates?: Record<string, { status?: string; message?: string | null }>;
+  kind?: string;
+  details?: unknown;
 }
 
 export interface UiFileChange {

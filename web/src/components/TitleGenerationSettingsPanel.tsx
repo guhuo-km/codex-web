@@ -78,7 +78,10 @@ export function TitleGenerationSettingsPanel() {
   return (
     <div className="title-generation-settings notification-settings">
       <div className="notification-toolbar">
-        <span>{loaded ? "AI 辅助" : "正在加载 AI 辅助配置..."}</span>
+        <span className="ai-assist-heading">
+          <span>{loaded ? "AI 辅助" : "正在加载 AI 辅助配置..."}</span>
+          <small>为命令解释等轻量辅助功能配置独立的小模型接口。</small>
+        </span>
         <button type="button" onClick={() => void save()} disabled={saving}>
           <Save size={14} />
           <span>{saving ? "保存中" : "保存配置"}</span>
