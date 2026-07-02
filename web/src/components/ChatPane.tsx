@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Check, Clock3, Copy, FileText, Gauge, GitBranch, MessageSquare, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw, SquareTerminal, Undo2, X } from "lucide-react";
-import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type HTMLAttributes, type ReactNode, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -13,7 +13,7 @@ import { terminalWsUrl } from "../api";
 import { formatDuration, formatTokenCount } from "../display-format";
 import { diffStatsForToolCall, fileChangeViews } from "../file-change-display";
 import { appendTurnWindow, followLatestTurnWindow, latestTurnWindow, normalizeTurnWindow, prependTurnWindow, type TurnWindow } from "../turn-window";
-import type { QueuedSteerMessage, TaskSummary, ThreadGoal, ToolGroupCollapseMode, UiAgentEvent, UiMessage, UiSubagentCall, UiThread, UiToolCall } from "../types";
+import type { QueuedSteerMessage, TaskSummary, ThreadGoal, ToolCardFrameKey, ToolCardFrameSettings, ToolGroupCollapseMode, UiAgentEvent, UiMessage, UiSubagentCall, UiThread, UiToolCall } from "../types";
 
 const INITIAL_VISIBLE_TURNS = 20;
 const TURN_WINDOW_BATCH_SIZE = 10;
@@ -26,6 +26,7 @@ interface ChatPaneProps {
   isGenerating?: boolean;
   model?: string;
   toolGroupCollapseMode?: ToolGroupCollapseMode;
+  toolCardFrames?: ToolCardFrameSettings;
   renderUserMessagesAsMarkdown?: boolean;
   historyCacheTurnLimit?: number;
   runningTask?: TaskSummary;
@@ -52,6 +53,7 @@ export const ChatPane = memo(function ChatPane({
   isGenerating = false,
   model,
   toolGroupCollapseMode = "alwaysExpanded",
+  toolCardFrames,
   renderUserMessagesAsMarkdown = false,
   historyCacheTurnLimit = 60,
   runningTask,
@@ -265,7 +267,10 @@ export const ChatPane = memo(function ChatPane({
                 isLast={index === visibleMessages.length - 1}
                 model={model}
                 toolGroupCollapseMode={toolGroupCollapseMode}
+                toolCardFrames={toolCardFrames}
+                subagentThreads={subagentThreads}
                 renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
+                onSelectSubagent={onSelectSubagent}
                 onRollbackMessage={onRollbackMessage}
                 onForkMessage={onForkMessage}
                 onPreviewImage={setPreviewImage}
@@ -286,7 +291,10 @@ export const ChatPane = memo(function ChatPane({
                   isLast
                   model={model}
                   toolGroupCollapseMode={toolGroupCollapseMode}
+                  toolCardFrames={toolCardFrames}
+                  subagentThreads={subagentThreads}
                   renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
+                  onSelectSubagent={onSelectSubagent}
                   onRollbackMessage={onRollbackMessage}
                   onForkMessage={onForkMessage}
                   onPreviewImage={setPreviewImage}
@@ -350,7 +358,10 @@ function ChatMessage({
   isLast,
   model,
   toolGroupCollapseMode,
+  toolCardFrames,
+  subagentThreads,
   renderUserMessagesAsMarkdown,
+  onSelectSubagent,
   onRollbackMessage,
   onForkMessage,
   onPreviewImage
@@ -359,7 +370,10 @@ function ChatMessage({
   isLast: boolean;
   model?: string;
   toolGroupCollapseMode: ToolGroupCollapseMode;
+  toolCardFrames?: ToolCardFrameSettings;
+  subagentThreads?: UiThread[];
   renderUserMessagesAsMarkdown: boolean;
+  onSelectSubagent?: (thread: UiThread) => void;
   onRollbackMessage?: (messageId: string) => void;
   onForkMessage?: (messageId: string) => void;
   onPreviewImage: (image: { src: string; name: string }) => void;
@@ -389,7 +403,14 @@ function ChatMessage({
         <div className="message-content">
           <MessageAttachments message={message} onPreviewImage={onPreviewImage} />
           {hasParts && !isUser ? (
-            <AssistantParts parts={message.assistantParts ?? []} toolGroupCollapseMode={toolGroupCollapseMode} isStreaming={Boolean(message.isStreaming)} />
+            <AssistantParts
+              parts={message.assistantParts ?? []}
+              toolGroupCollapseMode={toolGroupCollapseMode}
+              toolCardFrames={toolCardFrames}
+              subagentThreads={subagentThreads}
+              isStreaming={Boolean(message.isStreaming)}
+              onSelectSubagent={onSelectSubagent}
+            />
           ) : hasText ? (
             isUser ? (
               <div className="user-message-bubble">
@@ -586,9 +607,22 @@ function ImagePreviewOverlay({ image, onClose }: { image: { src: string; name: s
   );
 }
 
-function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: NonNullable<UiMessage["assistantParts"]>; toolGroupCollapseMode: ToolGroupCollapseMode; isStreaming: boolean }) {
-  const [openToolId, setOpenToolId] = useState<string | null>(null);
-  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null);
+function AssistantParts({
+  parts,
+  toolGroupCollapseMode,
+  toolCardFrames,
+  subagentThreads,
+  isStreaming,
+  onSelectSubagent
+}: {
+  parts: NonNullable<UiMessage["assistantParts"]>;
+  toolGroupCollapseMode: ToolGroupCollapseMode;
+  toolCardFrames?: ToolCardFrameSettings;
+  subagentThreads?: UiThread[];
+  isStreaming: boolean;
+  onSelectSubagent?: (thread: UiThread) => void;
+}) {
+  const [openCallId, setOpenCallId] = useState<string | null>(null);
   const [toggledToolGroups, setToggledToolGroups] = useState<Set<string>>(() => new Set());
   const partGroups = useMemo(() => groupAssistantParts(parts), [parts]);
 
@@ -615,26 +649,8 @@ function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: 
         if (group.kind === "reasoning") return <ReasoningBlock key={group.part.id} text={group.part.text} summary={group.part.summary} />;
         if (group.kind === "steer") return <SteerInline key={group.part.id} item={group.part} />;
         if (group.kind === "agentEvent") return <AgentEventBlock key={group.part.id} event={group.part.event} />;
-        if (group.kind === "subagent") {
-          return (
-            <SubagentCallCard
-              key={group.part.id}
-              subagent={group.part.subagent}
-              open={openSubagentId === group.part.id}
-              onToggle={() => setOpenSubagentId((current) => current === group.part.id ? null : group.part.id)}
-            />
-          );
-        }
         if (group.parts.length === 1) {
-          const part = group.parts[0]!;
-          return (
-            <ToolCallCard
-              key={part.id}
-              toolCall={part.toolCall}
-              open={openToolId === part.id}
-              onToggle={() => setOpenToolId((current) => current === part.id ? null : part.id)}
-            />
-          );
+          return renderCallPart(group.parts[0]!);
         }
         const defaultCollapsed = toolGroupCollapseMode === "alwaysCollapsed" || (toolGroupCollapseMode === "collapseAfterComplete" && !isStreaming);
         const collapsed = defaultCollapsed ? !toggledToolGroups.has(group.id) : toggledToolGroups.has(group.id);
@@ -642,115 +658,179 @@ function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: 
           <div className={`tool-call-group ${collapsed ? "collapsed" : ""}`} key={group.id}>
             <button className="tool-call-group-toggle" type="button" onClick={() => toggleToolGroup(group.id)} aria-expanded={!collapsed}>
               <span className="tool-call-group-chevron" aria-hidden="true" />
-              <span>{toolGroupSummary(group.parts.map((part) => part.toolCall))}</span>
+              <span>{callGroupSummary(group.parts)}</span>
             </button>
             <div className="tool-call-group-body">
-              {collapsed ? null : group.parts.map((part) => (
-                <ToolCallCard
-                  key={part.id}
-                  toolCall={part.toolCall}
-                  open={openToolId === part.id}
-                  onToggle={() => setOpenToolId((current) => current === part.id ? null : part.id)}
-                />
-              ))}
+              {collapsed ? null : group.parts.map((part) => renderCallPart(part))}
             </div>
           </div>
         );
       })}
     </div>
   );
-}
 
-function SubagentCallCard({ subagent, open, onToggle }: { subagent: UiSubagentCall; open: boolean; onToggle: () => void }) {
-  const detailItems = subagentDetailItems(subagent);
-  const status = subagentStatus(subagent);
-  return (
-    <section className={`subagent-call-card ${statusClass(status)} ${open ? "open" : ""}`}>
-      <button className="subagent-call-summary" type="button" onClick={onToggle} aria-expanded={open}>
-        <span className="subagent-call-icon" aria-hidden="true" />
-        <span className="subagent-call-main">
-          <span className="subagent-call-title" title={subagentTitle(subagent)}>{subagentTitle(subagent)}</span>
-          <span className="subagent-call-subtitle">
-            {subagentSubtitle(subagent)}
-          </span>
-        </span>
-      </button>
-      <div className={`subagent-call-detail ${open ? "open" : "closed"}`} aria-hidden={!open}>
-        <div className="subagent-call-detail-inner">
+  function renderCallPart(part: CallPart) {
+    if (part.type === "subagent") {
+      const targetThread = subagentTargetThread(part.subagent, subagentThreads ?? []);
+      const detailItems = subagentDetailItems(part.subagent);
+      return (
+        <CallCard
+          key={part.id}
+          framed={isToolCardFrameEnabled(toolCardFrames, "subagent")}
+          status={subagentStatus(part.subagent)}
+          open={openCallId === part.id}
+          onToggle={() => setOpenCallId((current) => current === part.id ? null : part.id)}
+          iconStyle={{ "--tool-icon": 'url("/icons/agent.svg")' } as CSSProperties}
+          title={subagentTitle(part.subagent)}
+          subtitle={subagentSubtitle(part.subagent)}
+          trailingAction={targetThread && onSelectSubagent ? (
+            <button
+              className="tool-call-trailing-action"
+              type="button"
+              onClick={() => onSelectSubagent(targetThread)}
+              aria-label={`打开子代理会话 ${targetThread.id}`}
+              title={`进入子代理会话 ${targetThread.id}`}
+            >
+              <PanelRightOpen size={14} />
+            </button>
+          ) : null}
+        >
           {detailItems.map((item) => (
-            <div className="subagent-call-kv" key={item.label}>
+            <div className="tool-call-kv" key={item.label}>
               <span>{item.label}</span>
               {item.kind === "code" ? <code>{item.value}</code> : <pre>{item.value}</pre>}
             </div>
           ))}
-        </div>
-      </div>
-    </section>
-  );
+        </CallCard>
+      );
+    }
+
+    return (
+      <ToolCallCard
+        key={part.id}
+        toolCall={part.toolCall}
+        framed={isToolCardFrameEnabled(toolCardFrames, toolCardFrameKey(part.toolCall))}
+        open={openCallId === part.id}
+        onToggle={() => setOpenCallId((current) => current === part.id ? null : part.id)}
+      />
+    );
+  }
 }
 
-function ToolCallCard({ toolCall, open, onToggle }: { toolCall: UiToolCall; open: boolean; onToggle: () => void }) {
+function ToolCallCard({ toolCall, framed, open, onToggle }: { toolCall: UiToolCall; framed: boolean; open: boolean; onToggle: () => void }) {
   const output = toolCall.aggregatedOutput?.trim();
   const detailItems = toolDetailItems(toolCall);
   const fileChangeStats = toolCall.type === "fileChange" ? diffStatsForToolCall(toolCall) : null;
   const fileChanges = toolCall.type === "fileChange" ? fileChangeViews(toolCall) : [];
+  const subtitle = (
+    <>
+      {fileChanges.length > 1 ? (
+        <span className="tool-file-summary-list">
+          {fileChanges.map((view) => (
+            <span className="tool-file-summary-item" key={`${view.change.kind ?? "change"}:${view.change.path}:${view.change.movePath ?? ""}`}>
+              <span>{shortPathName(view.change.movePath ?? view.change.path)}</span>
+              <DiffStats stats={view.stats} />
+            </span>
+          ))}
+        </span>
+      ) : fileChangeStats && (fileChangeStats.added > 0 || fileChangeStats.removed > 0) ? (
+        <DiffStats stats={fileChangeStats} />
+      ) : (
+        statusLabel(toolCall.status)
+      )}
+      {toolCall.durationMs != null ? ` · ${formatDuration(toolCall.durationMs)}` : ""}
+    </>
+  );
 
   return (
-    <section className={`tool-call-card ${statusClass(toolCall.status)} ${open ? "open" : ""}`}>
-      <button className="tool-call-summary" type="button" onClick={onToggle}>
-        <span className="tool-call-icon" aria-hidden="true" style={{ "--tool-icon": `url("${toolIcon(toolCall.type)}")` } as CSSProperties} />
-        <span className="tool-call-main">
-          {toolCall.commandExplanation ? <span className="tool-call-explanation">{toolCall.commandExplanation}</span> : null}
-          <span className="tool-call-title">{toolTitle(toolCall)}</span>
-          <span className="tool-call-subtitle">
-            {fileChanges.length > 1 ? (
-              <span className="tool-file-summary-list">
-                {fileChanges.map((view) => (
-                  <span className="tool-file-summary-item" key={`${view.change.kind ?? "change"}:${view.change.path}:${view.change.movePath ?? ""}`}>
-                    <span>{shortPathName(view.change.movePath ?? view.change.path)}</span>
-                    <DiffStats stats={view.stats} />
-                  </span>
-                ))}
-              </span>
-            ) : fileChangeStats && (fileChangeStats.added > 0 || fileChangeStats.removed > 0) ? (
-              <DiffStats stats={fileChangeStats} />
-            ) : (
-              statusLabel(toolCall.status)
-            )}
-            {toolCall.durationMs != null ? ` · ${formatDuration(toolCall.durationMs)}` : ""}
+    <CallCard
+      framed={framed}
+      status={toolCall.status}
+      open={open}
+      onToggle={onToggle}
+      iconStyle={{ "--tool-icon": `url("${toolIcon(toolCall.type)}")` } as CSSProperties}
+      eyebrow={toolCall.commandExplanation}
+      title={toolTitle(toolCall)}
+      subtitle={subtitle}
+    >
+      {fileChanges.length ? (
+        <div className="tool-file-change-list">
+          {fileChanges.map((view) => (
+            <section className="tool-file-change" key={`${view.change.kind ?? "change"}:${view.change.path}:${view.change.movePath ?? ""}`}>
+              <div className="tool-file-change-header">
+                <span className="tool-file-change-kind">{view.label}</span>
+                <code>{view.path}</code>
+                {view.stats.added > 0 || view.stats.removed > 0 ? <DiffStats stats={view.stats} /> : null}
+              </div>
+              {view.code.trim() ? <CodeBlock code={view.code} language="diff" /> : <div className="tool-call-empty">无 diff 内容</div>}
+            </section>
+          ))}
+        </div>
+      ) : null}
+      {detailItems.map((item) => (
+        <div className="tool-call-kv" key={item.label}>
+          {item.kind === "diff" ? null : <span>{item.label}</span>}
+          {item.kind === "code" ? <code>{item.value}</code> : item.kind === "diff" ? <CodeBlock code={item.value} language="diff" /> : <pre>{item.value}</pre>}
+        </div>
+      ))}
+      {output ? (
+        <div className="tool-call-output">
+          <span>输出</span>
+          <pre>{stripAnsi(output)}</pre>
+        </div>
+      ) : detailItems.length === 0 ? (
+        <div className="tool-call-empty">暂无输出</div>
+      ) : null}
+    </CallCard>
+  );
+}
+
+function CallCard({
+  framed,
+  status,
+  open,
+  onToggle,
+  iconStyle,
+  eyebrow,
+  title,
+  subtitle,
+  trailingAction,
+  children
+}: {
+  framed: boolean;
+  status?: string;
+  open: boolean;
+  onToggle: () => void;
+  iconStyle: CSSProperties;
+  eyebrow?: string;
+  title: string;
+  subtitle: ReactNode;
+  trailingAction?: ReactNode;
+  children: ReactNode;
+}) {
+  const cardClassName = [
+    "tool-call-card",
+    framed ? "framed" : "unframed",
+    statusClass(status),
+    open ? "open" : undefined
+  ].filter(Boolean).join(" ");
+
+  return (
+    <section className={cardClassName}>
+      <div className="tool-call-header">
+        <button className="tool-call-summary" type="button" onClick={onToggle} aria-expanded={open}>
+          <span className="tool-call-icon" aria-hidden="true" style={iconStyle} />
+          <span className="tool-call-main">
+            {eyebrow ? <span className="tool-call-explanation">{eyebrow}</span> : null}
+            <span className="tool-call-title" title={title}>{title}</span>
+            <span className="tool-call-subtitle">{subtitle}</span>
           </span>
-        </span>
-      </button>
+        </button>
+        {trailingAction}
+      </div>
       <div className={`tool-call-detail ${open ? "open" : "closed"}`} aria-hidden={!open}>
         <div className="tool-call-detail-inner">
-          {fileChanges.length ? (
-            <div className="tool-file-change-list">
-              {fileChanges.map((view) => (
-                <section className="tool-file-change" key={`${view.change.kind ?? "change"}:${view.change.path}:${view.change.movePath ?? ""}`}>
-                  <div className="tool-file-change-header">
-                    <span className="tool-file-change-kind">{view.label}</span>
-                    <code>{view.path}</code>
-                    {view.stats.added > 0 || view.stats.removed > 0 ? <DiffStats stats={view.stats} /> : null}
-                  </div>
-                  {view.code.trim() ? <CodeBlock code={view.code} language="diff" /> : <div className="tool-call-empty">无 diff 内容</div>}
-                </section>
-              ))}
-            </div>
-          ) : null}
-          {detailItems.map((item) => (
-            <div className="tool-call-kv" key={item.label}>
-              {item.kind === "diff" ? null : <span>{item.label}</span>}
-              {item.kind === "code" ? <code>{item.value}</code> : item.kind === "diff" ? <CodeBlock code={item.value} language="diff" /> : <pre>{item.value}</pre>}
-            </div>
-          ))}
-          {output ? (
-            <div className="tool-call-output">
-              <span>输出</span>
-              <pre>{stripAnsi(output)}</pre>
-            </div>
-          ) : detailItems.length === 0 ? (
-            <div className="tool-call-empty">暂无输出</div>
-          ) : null}
+          {children}
         </div>
       </div>
     </section>
@@ -758,50 +838,47 @@ function ToolCallCard({ toolCall, open, onToggle }: { toolCall: UiToolCall; open
 }
 
 type AssistantPart = NonNullable<UiMessage["assistantParts"]>[number];
+type CallPart = Extract<AssistantPart, { type: "tool" | "subagent" }>;
 
 type AssistantPartGroup =
   | { kind: "text"; part: Extract<AssistantPart, { type: "text" }> }
   | { kind: "reasoning"; part: Extract<AssistantPart, { type: "reasoning" }> }
   | { kind: "steer"; part: Extract<AssistantPart, { type: "steer" }> }
   | { kind: "agentEvent"; part: Extract<AssistantPart, { type: "agentEvent" }> }
-  | { kind: "subagent"; part: Extract<AssistantPart, { type: "subagent" }> }
-  | { kind: "tools"; id: string; parts: Array<Extract<AssistantPart, { type: "tool" }>> };
+  | { kind: "calls"; id: string; parts: CallPart[] };
 
 function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): AssistantPartGroup[] {
   const groups: AssistantPartGroup[] = [];
-  let toolBuffer: Array<Extract<AssistantPart, { type: "tool" }>> = [];
+  let callBuffer: CallPart[] = [];
 
-  function flushTools() {
-    if (!toolBuffer.length) return;
+  function flushCalls() {
+    if (!callBuffer.length) return;
     groups.push({
-      kind: "tools",
-      id: `tools-${toolBuffer[0]?.id ?? groups.length}-${toolBuffer.length}`,
-      parts: toolBuffer
+      kind: "calls",
+      id: `calls-${callBuffer[0]?.id ?? groups.length}-${callBuffer.length}`,
+      parts: callBuffer
     });
-    toolBuffer = [];
+    callBuffer = [];
   }
 
   for (const part of parts) {
-    if (part.type === "tool") {
-      toolBuffer.push(part);
+    if (part.type === "tool" || part.type === "subagent") {
+      callBuffer.push(part);
     } else if (part.type === "reasoning") {
-      flushTools();
+      flushCalls();
       groups.push({ kind: "reasoning", part });
     } else if (part.type === "steer") {
-      flushTools();
+      flushCalls();
       groups.push({ kind: "steer", part });
     } else if (part.type === "agentEvent") {
-      flushTools();
+      flushCalls();
       groups.push({ kind: "agentEvent", part });
-    } else if (part.type === "subagent") {
-      flushTools();
-      groups.push({ kind: "subagent", part });
     } else {
-      flushTools();
+      flushCalls();
       groups.push({ kind: "text", part });
     }
   }
-  flushTools();
+  flushCalls();
   return groups;
 }
 
@@ -840,6 +917,16 @@ function subagentAgentLabel(subagent: UiSubagentCall): string {
     looksLikeThreadId(subagent.id) ? subagent.id : undefined
   ].filter((value, index, values): value is string => Boolean(value && values.indexOf(value) === index));
   return ids.join("、");
+}
+
+function subagentTargetThread(subagent: UiSubagentCall, threads: UiThread[]): UiThread | undefined {
+  const ids = [
+    subagent.agentThreadId,
+    ...(subagent.receiverThreadIds ?? []),
+    ...Object.keys(subagent.agentsStates ?? {}),
+    looksLikeThreadId(subagent.id) ? subagent.id : undefined
+  ].filter((value, index, values): value is string => Boolean(value && values.indexOf(value) === index));
+  return ids.map((id) => threads.find((thread) => thread.id === id)).find((thread): thread is UiThread => Boolean(thread));
 }
 
 function subagentToolLabel(tool: string | undefined): string {
@@ -891,13 +978,19 @@ function compactWhitespace(value: string): string {
   return text.length > 96 ? `${text.slice(0, 96)}...` : text;
 }
 
-function toolGroupSummary(toolCalls: UiToolCall[]): string {
+function callGroupSummary(parts: CallPart[]): string {
   const changedFiles = new Set<string>();
   let webSearches = 0;
   let commands = 0;
   let mcpCalls = 0;
+  let subagents = 0;
 
-  for (const toolCall of toolCalls) {
+  for (const part of parts) {
+    if (part.type === "subagent") {
+      subagents += 1;
+      continue;
+    }
+    const toolCall = part.toolCall;
     if (toolCall.type === "fileChange") {
       for (const change of toolCall.changes ?? []) {
         if (change.path) changedFiles.add(change.path);
@@ -913,10 +1006,11 @@ function toolGroupSummary(toolCalls: UiToolCall[]): string {
     changedFiles.size ? `更改了 ${changedFiles.size} 个文件` : "",
     webSearches ? `进行了 ${webSearches} 次网络搜索` : "",
     commands ? `执行了 ${commands} 次命令` : "",
-    mcpCalls ? `调用了 ${mcpCalls} 次 MCP 工具` : ""
+    mcpCalls ? `调用了 ${mcpCalls} 次 MCP 工具` : "",
+    subagents ? `调用了 ${subagents} 个子代理` : ""
   ].filter(Boolean);
 
-  return segments.length ? segments.join("，") : `进行了 ${toolCalls.length} 次工具调用`;
+  return segments.length ? segments.join("，") : `进行了 ${parts.length} 次调用`;
 }
 
 function DiffStats({ stats }: { stats: { added: number; removed: number } }) {
@@ -2338,6 +2432,21 @@ function toolTypeLabel(type: string): string {
   if (type === "imageGeneration") return "生成图片";
   if (type === "plan") return "计划";
   return "工具";
+}
+
+function toolCardFrameKey(toolCall: UiToolCall): ToolCardFrameKey {
+  if (toolCall.type === "commandExecution") return "command";
+  if (toolCall.type === "fileChange") return "fileChange";
+  if (toolCall.type === "mcpToolCall") return "mcp";
+  if (toolCall.type === "dynamicToolCall") return "dynamic";
+  if (toolCall.type === "webSearch") return "webSearch";
+  if (toolCall.type === "imageView" || toolCall.type === "imageGeneration") return "image";
+  if (toolCall.type === "plan") return "plan";
+  return "other";
+}
+
+function isToolCardFrameEnabled(settings: ToolCardFrameSettings | undefined, key: ToolCardFrameKey): boolean {
+  return settings?.[key] === true;
 }
 
 function toolIcon(type: string): string {

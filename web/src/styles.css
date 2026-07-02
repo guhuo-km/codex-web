@@ -1982,10 +1982,21 @@ textarea:disabled {
 .tool-call-card {
   position: relative;
   overflow: hidden;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   padding-left: 0;
+}
+
+.tool-call-card.framed {
+  border-color: color-mix(in srgb, var(--border) 74%, transparent);
+  background: color-mix(in srgb, var(--muted) 22%, var(--background));
+}
+
+.tool-call-card.unframed {
+  overflow: visible;
+  border-color: transparent;
+  background: transparent;
 }
 
 .tool-call-group {
@@ -2059,9 +2070,14 @@ textarea:disabled {
   gap: 0;
 }
 
-.tool-call-card.open {
+.tool-call-card.open.framed {
   margin: 2px 0 4px;
   background: color-mix(in srgb, var(--muted) 28%, transparent);
+}
+
+.tool-call-card.open.unframed {
+  margin: 0 0 2px;
+  background: transparent;
 }
 
 .tool-call-card.running {
@@ -2070,6 +2086,13 @@ textarea:disabled {
 
 .tool-call-card.failed {
   color: var(--danger);
+}
+
+.tool-call-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
 }
 
 .tool-call-summary {
@@ -2090,6 +2113,14 @@ textarea:disabled {
 
 .tool-call-summary:hover {
   background: color-mix(in srgb, var(--muted) 46%, transparent);
+}
+
+.tool-call-card.unframed .tool-call-summary {
+  padding-inline: 2px 6px;
+}
+
+.tool-call-card.unframed .tool-call-summary:hover {
+  background: color-mix(in srgb, var(--muted) 26%, transparent);
 }
 
 .tool-call-icon {
@@ -2231,6 +2262,11 @@ textarea:disabled {
     transform 190ms cubic-bezier(.2, .8, .2, 1);
 }
 
+.tool-call-card.unframed .tool-call-detail {
+  margin-right: 0;
+  border-top-color: color-mix(in srgb, var(--border) 44%, transparent);
+}
+
 .tool-call-detail.open {
   grid-template-rows: 1fr;
   margin-bottom: 7px;
@@ -2342,166 +2378,47 @@ textarea:disabled {
   font-size: 12px;
 }
 
-.subagent-call-card {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--muted) 22%, var(--background));
-}
-
-.subagent-call-card.open {
-  background: color-mix(in srgb, var(--muted) 28%, transparent);
-}
-
-.subagent-call-card.running,
-.subagent-call-card.in-progress {
-  color: var(--primary);
-}
-
-.subagent-call-card.failed {
-  color: var(--danger);
-}
-
-.subagent-call-summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  width: 100%;
-  min-height: 34px;
-  border: 0;
+.tool-call-trailing-action {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+  border-radius: 6px;
   background: transparent;
-  color: var(--foreground);
-  padding: 7px 8px;
-  text-align: left;
-}
-
-.subagent-call-summary:hover {
-  background: color-mix(in srgb, var(--muted) 46%, transparent);
-}
-
-.subagent-call-icon {
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  background: currentColor;
-  color: color-mix(in srgb, var(--primary) 68%, var(--muted-foreground));
-  -webkit-mask: url("/icons/agent.svg") center / contain no-repeat;
-  mask: url("/icons/agent.svg") center / contain no-repeat;
-}
-
-.subagent-call-card.completed .subagent-call-icon {
-  color: var(--success);
-}
-
-.subagent-call-card.failed .subagent-call-icon {
-  color: var(--danger);
-}
-
-.subagent-call-main {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.subagent-call-title {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--foreground);
-  font-size: 12px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subagent-call-subtitle {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted-foreground);
-  font-size: 11px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subagent-call-detail {
-  display: grid;
-  grid-template-rows: 0fr;
-  gap: 8px;
-  margin: 0 8px 0 36px;
-  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   padding: 0;
-  opacity: 0;
-  transform-origin: top;
-  transform: translateY(-6px);
-  transition:
-    grid-template-rows 190ms cubic-bezier(.2, .8, .2, 1),
-    margin 190ms cubic-bezier(.2, .8, .2, 1),
-    padding 190ms cubic-bezier(.2, .8, .2, 1),
-    opacity 150ms ease,
-    transform 190ms cubic-bezier(.2, .8, .2, 1);
-}
-
-.subagent-call-detail.open {
-  grid-template-rows: 1fr;
-  margin-bottom: 8px;
-  padding-top: 8px;
-  padding-bottom: 2px;
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.subagent-call-detail.closed {
-  pointer-events: none;
-}
-
-.subagent-call-detail-inner {
-  display: grid;
-  min-height: 0;
-  overflow: hidden;
-  gap: 8px;
-}
-
-.subagent-call-kv {
-  display: grid;
-  gap: 5px;
-}
-
-.subagent-call-kv > span {
   color: var(--muted-foreground);
-  font-size: 11px;
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
 
-.subagent-call-kv code {
-  width: fit-content;
-  max-width: 100%;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--background) 78%, var(--muted));
-  padding: 2px 6px;
-  color: var(--foreground);
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tool-call-card:hover .tool-call-trailing-action,
+.tool-call-trailing-action:focus-visible {
+  opacity: .65;
 }
 
-.subagent-call-kv pre {
-  max-height: 260px;
-  overflow: auto;
-  margin: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--background) 80%, var(--muted));
-  padding: 9px;
+.tool-call-trailing-action:hover {
+  border-color: color-mix(in srgb, var(--primary) 46%, var(--border));
+  background: color-mix(in srgb, var(--muted) 34%, transparent);
   color: var(--foreground);
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
+  opacity: 1;
+}
+
+.tool-call-card.unframed .tool-call-trailing-action {
+  margin-right: 0;
+}
+
+@media (hover: none) {
+  .tool-call-trailing-action {
+    opacity: .58;
+  }
 }
 
 .typing-indicator {
@@ -4841,6 +4758,40 @@ textarea:disabled {
   width: 100%;
 }
 
+.settings-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--background) 76%, var(--muted));
+  padding: 9px 10px;
+}
+
+.settings-check-row span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-check-row strong {
+  font-size: 12px;
+}
+
+.settings-check-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-inline-button {
   height: 32px;
   border: 1px solid var(--border);
@@ -5795,13 +5746,9 @@ textarea:disabled {
   .tool-call-list,
   .tool-call-group,
   .tool-call-card,
-  .subagent-call-card,
   .tool-call-main,
-  .subagent-call-main,
   .tool-call-detail,
-  .subagent-call-detail,
-  .tool-call-detail-inner,
-  .subagent-call-detail-inner {
+  .tool-call-detail-inner {
     min-width: 0;
     max-width: 100%;
   }
@@ -5847,15 +5794,6 @@ textarea:disabled {
   }
 
   .tool-call-detail {
-    margin-left: 30px;
-  }
-
-  .subagent-call-summary {
-    gap: 7px;
-    padding: 6px 6px;
-  }
-
-  .subagent-call-detail {
     margin-left: 30px;
   }
 
@@ -5992,6 +5930,10 @@ textarea:disabled {
   .settings-option .settings-text-input,
   .settings-option .settings-password-field {
     width: 100%;
+  }
+
+  .settings-check-grid {
+    grid-template-columns: 1fr;
   }
 
   .sidebar-width-setting {

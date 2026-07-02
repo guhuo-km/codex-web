@@ -87,11 +87,95 @@ describe("right side drawer UI", () => {
       isGenerating: true
     }));
 
-    expect(html).toContain("subagent-call-card");
-    expect(html).toContain("subagent-call-icon");
+    expect(html).toContain("tool-call-card unframed completed");
+    expect(html).toContain("/icons/agent.svg");
     expect(html).toContain("启动子代理");
     expect(html).toContain("Fermat");
+    expect(html).toContain("tool-call-detail");
     expect(html).not.toContain("codex.item/started");
+  });
+
+  test("groups consecutive tool and subagent calls in the same call group", () => {
+    const html = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: mixedCallThread,
+      isGenerating: true,
+      toolGroupCollapseMode: "alwaysExpanded"
+    }));
+
+    expect(html.match(/class="tool-call-group /g)?.length ?? 0).toBe(1);
+    expect(html).toContain("tool-call-group-body");
+    expect(html).toContain("tool-call-card unframed completed");
+    expect(html).toContain("/icons/agent.svg");
+    expect(html.indexOf("Get-Content package.json")).toBeLessThan(html.indexOf("启动子代理"));
+    expect(html.indexOf("启动子代理")).toBeLessThan(html.indexOf("Get-ChildItem src"));
+  });
+
+  test("defaults tool and subagent call cards to unframed while keeping details", () => {
+    const commandHtml = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: explainedToolThread,
+      isGenerating: true
+    }));
+    const subagentHtml = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: subagentThread,
+      isGenerating: true
+    }));
+
+    expect(commandHtml).toContain("tool-call-card unframed");
+    expect(commandHtml).toContain("tool-call-detail");
+    expect(commandHtml).toContain("Get-Content -Raw package.json");
+    expect(subagentHtml).toContain("tool-call-card unframed completed");
+    expect(subagentHtml).toContain("tool-call-detail");
+    expect(subagentHtml).toContain("只读探索项目结构");
+  });
+
+  test("renders an enter button for subagent calls when the child thread is known", () => {
+    const html = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: subagentThread,
+      isGenerating: true,
+      subagentThreads: [childSubagentThread],
+      onSelectSubagent: vi.fn()
+    }));
+
+    expect(html).toContain("tool-call-trailing-action");
+    expect(html).toContain("aria-label=\"打开子代理会话 thread-child\"");
+    expect(html).toContain("进入子代理会话 thread-child");
+    expect(html).toContain("lucide-panel-right-open");
+  });
+
+  test("can render selected tool call cards without outer frames", () => {
+    const subagentHtml = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: subagentThread,
+      isGenerating: true,
+      toolCardFrames: {
+        command: false,
+        fileChange: true,
+        mcp: true,
+        dynamic: true,
+        webSearch: true,
+        image: true,
+        plan: true,
+        subagent: false,
+        other: true
+      }
+    }));
+    const commandHtml = renderToStaticMarkup(React.createElement(ChatPane, {
+      thread: explainedToolThread,
+      isGenerating: true,
+      toolCardFrames: {
+        command: false,
+        fileChange: true,
+        mcp: true,
+        dynamic: true,
+        webSearch: true,
+        image: true,
+        plan: true,
+        subagent: true,
+        other: true
+      }
+    }));
+
+    expect(subagentHtml).toContain("tool-call-card unframed completed");
+    expect(commandHtml).toContain("tool-call-card unframed");
   });
 
   test("renders the right drawer handle on desktop even when there is only one turn", () => {
@@ -327,6 +411,79 @@ const subagentThread: UiThread = {
       }]
     }
   ]
+};
+
+const mixedCallThread: UiThread = {
+  id: "thread-mixed-calls",
+  cwd: "D:\\repo",
+  title: "Thread",
+  updatedAt: Date.now(),
+  isDraft: false,
+  messages: [
+    { id: "user-mixed", role: "user", text: "inspect", createdAt: 1, turnId: "turn-mixed" },
+    {
+      id: "assistant-mixed",
+      role: "assistant",
+      text: "",
+      createdAt: 2,
+      turnId: "turn-mixed",
+      assistantParts: [
+        {
+          type: "tool",
+          id: "cmd-mixed-1",
+          toolCall: {
+            id: "cmd-mixed-1",
+            type: "commandExecution",
+            command: "Get-Content package.json",
+            status: "completed"
+          }
+        },
+        {
+          type: "subagent",
+          id: "subagent-mixed-1",
+          subagent: {
+            id: "subagent-mixed-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "thread-mixed-calls",
+            receiverThreadIds: ["thread-child"],
+            prompt: "只读探索项目结构",
+            agentsStates: {
+              "thread-child": { status: "completed", message: "Fermat" }
+            },
+            details: {
+              id: "subagent-mixed-1",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent"
+            }
+          }
+        },
+        {
+          type: "tool",
+          id: "cmd-mixed-2",
+          toolCall: {
+            id: "cmd-mixed-2",
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            status: "completed"
+          }
+        }
+      ]
+    }
+  ]
+};
+
+const childSubagentThread: UiThread = {
+  id: "thread-child",
+  cwd: "D:\\repo",
+  title: "Fermat",
+  updatedAt: Date.now(),
+  isDraft: false,
+  parentThreadId: "thread-subagent",
+  threadSource: "subagent",
+  isSubagent: true,
+  messages: []
 };
 
 const activeGoal: ThreadGoal = {
