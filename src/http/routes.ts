@@ -14,6 +14,8 @@ import type { ProjectStore } from "../projects/project-store.js";
 import { listTaskSummaries } from "../tasks/task-index.js";
 import type { ThemeStore } from "../themes/theme-store.js";
 import type { ThreadMetadataRecord, ThreadMetadataStore } from "../threads/thread-metadata-store.js";
+import { ToolExplanationService } from "../tool-explanations/tool-explanation-service.js";
+import { ToolExplanationStore } from "../tool-explanations/tool-explanation-store.js";
 import type { UserPreferencesStore } from "../preferences/user-preferences-store.js";
 import type { RuntimeDiagnostics } from "../runtime/diagnostics.js";
 import { groupThreadsByWorkspace } from "../workspaces/workspace-index.js";
@@ -33,11 +35,10 @@ export interface BridgeLike {
   getThreadGoal(threadId: string): Promise<unknown>;
   clearThreadGoal(threadId: string): Promise<unknown>;
   setThreadName(threadId: string, name: string): Promise<unknown>;
-  getConversationSummary(threadId: string): Promise<unknown>;
   startTurn(threadId: string, text: string, overrides?: Record<string, unknown>): Promise<unknown>;
   startTurnItems(threadId: string, input: Array<Record<string, unknown>>, overrides?: Record<string, unknown>): Promise<unknown>;
   interruptTurn(threadId: string, turnId: string): Promise<unknown>;
-  steerTurn(threadId: string, text: string, expectedTurnId: string): Promise<unknown>;
+  steerTurn(threadId: string, text: string, expectedTurnId: string, clientUserMessageId?: string): Promise<unknown>;
   listSkills(cwds: string[], forceReload?: boolean): Promise<unknown>;
   listPlugins(): Promise<unknown>;
   listMcpServers(): Promise<unknown>;
@@ -60,12 +61,14 @@ export interface RouteDeps {
   preferences: UserPreferencesStore;
   notifications: NotificationCenter;
   titleGeneration: TitleGenerationService;
+  toolExplanations?: ToolExplanationService;
   status: () => unknown;
   diagnostics?: RuntimeDiagnostics;
 }
 
 export function createRoutes(deps: RouteDeps): Router {
   const router = express.Router();
+  const toolExplanations = deps.toolExplanations ?? new ToolExplanationService(new ToolExplanationStore(deps.config.dataDir), deps.titleGeneration);
   const startTurnSchema = z.object({
     text: z.string().trim().min(1).optional(),
     input: z.array(z.record(z.unknown())).optional(),
@@ -210,6 +213,22 @@ export function createRoutes(deps: RouteDeps): Router {
   router.put("/api/title-generation", asyncHandler(async (req, res) => {
     const body = titleGenerationSchema.parse(req.body ?? {});
     ok(res, await deps.titleGeneration.updateSettings(body));
+  }));
+
+  router.post("/api/tool-explanations/command", asyncHandler(async (req, res) => {
+    const body = z.object({
+      command: z.string().trim().min(1).max(12000),
+      threadId: z.string().trim().min(1).optional(),
+      turnId: z.string().trim().min(1).optional(),
+      toolCallId: z.string().trim().min(1).optional()
+    }).parse(req.body ?? {});
+    const identity = body.threadId && body.turnId && body.toolCallId
+      ? { threadId: body.threadId, turnId: body.turnId, toolCallId: body.toolCallId, command: body.command }
+      : undefined;
+    const explanation = identity
+      ? await toolExplanations.explain(identity)
+      : await deps.titleGeneration.explainCommand({ command: body.command });
+    ok(res, { explanation });
   }));
 
   const builtInChannelSchema = z.object({
@@ -443,7 +462,7 @@ export function createRoutes(deps: RouteDeps): Router {
   }));
 
   router.get("/api/threads/:threadId", asyncHandler(async (req, res) => {
-    ok(res, await deps.bridge.readThread(param(req.params.threadId), true));
+    ok(res, await toolExplanations.annotate(await deps.bridge.readThread(param(req.params.threadId), true)));
   }));
 
   router.post("/api/threads/:threadId/turns", asyncHandler(async (req, res) => {
@@ -462,9 +481,10 @@ export function createRoutes(deps: RouteDeps): Router {
   router.post("/api/threads/:threadId/steer", asyncHandler(async (req, res) => {
     const body = z.object({
       text: z.string().trim().min(1),
-      turnId: z.string().trim().min(1)
+      turnId: z.string().trim().min(1),
+      clientUserMessageId: z.string().trim().min(1).optional()
     }).parse(req.body ?? {});
-    ok(res, await deps.bridge.steerTurn(param(req.params.threadId), body.text, body.turnId));
+    ok(res, await deps.bridge.steerTurn(param(req.params.threadId), body.text, body.turnId, body.clientUserMessageId));
   }));
 
   router.post("/api/threads/:threadId/rollback", asyncHandler(async (req, res) => {
@@ -517,14 +537,6 @@ export function createRoutes(deps: RouteDeps): Router {
     ok(res, await deps.bridge.setThreadName(param(req.params.threadId), name));
   }));
 
-  router.post("/api/threads/:threadId/title/generate", asyncHandler(async (req, res) => {
-    const threadId = param(req.params.threadId);
-    const thread = await deps.bridge.readThread(threadId, true);
-    const title = await deps.titleGeneration.generateTitle({ thread });
-    await deps.bridge.setThreadName(threadId, title);
-    ok(res, { title });
-  }));
-
   router.get("/api/capabilities", asyncHandler(async (req, res) => {
     const cwd = stringQuery(req.query.cwd);
     const cwds = cwd ? [cwd] : [];
@@ -563,12 +575,12 @@ export function createRoutes(deps: RouteDeps): Router {
     }));
   }));
 
-  router.get("/api/events", (req, res) => {
-    ok(res, deps.events.list({
+  router.get("/api/events", asyncHandler(async (req, res) => {
+    ok(res, await toolExplanations.annotate(deps.events.list({
       threadId: stringQuery(req.query.threadId),
       afterSeq: numberQuery(req.query.afterSeq)
-    }));
-  });
+    })));
+  }));
 
   router.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error instanceof z.ZodError) {

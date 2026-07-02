@@ -1,5 +1,6 @@
+import { agentEventPartId, eventToAgentEvent, isAgentEventSourceEvent, isGenericTurnAgentEventSourceEvent, isUnknownCodexItemEvent, isUnknownRawResponseItemEvent } from "./agent-events.js";
 import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeReasoningItem, normalizeTokenUsage, normalizeToolCallFromItem, pathBasename, readPath } from "./codex-normalizers.js";
-import type { BridgeEvent, UiAssistantPart, UiMessage, UiToolCall, UploadedAttachment } from "./types.js";
+import type { BridgeEvent, UiAgentEvent, UiAssistantPart, UiMessage, UiToolCall, UploadedAttachment } from "./types.js";
 
 export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
   const messages: UiMessage[] = [];
@@ -18,30 +19,26 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
     if (event.type === "turn.started") {
       const turnId = event.turnId;
       if (turnId) {
-        const assistant = byTurn.get(turnId);
-        if (assistant) {
-          assistant.turnStartedAt = Date.parse(String(readPath<string>(event, ["payload", "startedAt"]) ?? "")) || Date.parse(event.createdAt) || assistant.createdAt;
-        }
+        const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+        assistant.turnStartedAt = Date.parse(String(readPath<string>(event, ["payload", "startedAt"]) ?? "")) || Date.parse(event.createdAt) || assistant.createdAt;
       }
       continue;
     }
     if (event.type === "turn.completed") {
       const turnId = event.turnId;
       if (turnId) {
-        const assistant = byTurn.get(turnId);
-        if (assistant) {
-          assistant.turnStartedAt = assistant.turnStartedAt ?? (Date.parse(String(readPath<string>(event, ["payload", "startedAt"]) ?? "")) || assistant.createdAt);
-          assistant.turnCompletedAt = Date.parse(String(readPath<string>(event, ["payload", "completedAt"]) ?? "")) || Date.parse(event.createdAt) || undefined;
-          assistant.turnDurationMs = durationFromTiming(assistant.turnStartedAt, assistant.turnCompletedAt);
-          assistant.isStreaming = false;
-          const status = readPath<string>(event, ["payload", "status"]);
-          if (status === "interrupted") {
-            assistant.statusText = "已停止生成";
-            assistant.statusTone = "danger";
-          } else if (status === "failed") {
-            assistant.statusText = failureMessageFromEvent(event) ?? "生成失败";
-            assistant.statusTone = "danger";
-          }
+        const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+        assistant.turnStartedAt = assistant.turnStartedAt ?? (Date.parse(String(readPath<string>(event, ["payload", "startedAt"]) ?? "")) || assistant.createdAt);
+        assistant.turnCompletedAt = Date.parse(String(readPath<string>(event, ["payload", "completedAt"]) ?? "")) || Date.parse(event.createdAt) || undefined;
+        assistant.turnDurationMs = durationFromTiming(assistant.turnStartedAt, assistant.turnCompletedAt);
+        assistant.isStreaming = false;
+        const status = readPath<string>(event, ["payload", "status"]);
+        if (status === "interrupted") {
+          assistant.statusText = "已停止生成";
+          assistant.statusTone = "danger";
+        } else if (status === "failed") {
+          assistant.statusText = failureMessageFromEvent(event) ?? "生成失败";
+          assistant.statusTone = "danger";
         }
       }
       continue;
@@ -56,6 +53,16 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
     }
     if (event.type === "codex.item/agentMessage/delta") continue;
     const turnId = event.turnId;
+    if (turnId && isAgentEventSourceEvent(event)) {
+      const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+      appendAgentEventPart(assistant, eventToAgentEvent(event), event);
+      continue;
+    }
+    if (turnId && isGenericTurnAgentEventSourceEvent(event)) {
+      const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+      appendAgentEventPart(assistant, eventToAgentEvent(event), event);
+      continue;
+    }
     const item = readPath<Record<string, unknown>>(event, ["payload", "params", "item"]);
     if (!turnId || !item) continue;
 
@@ -65,6 +72,12 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
         turnId,
         createdAt: Date.parse(event.createdAt) || undefined
       }));
+      continue;
+    }
+
+    if (event.type === "codex.rawResponseItem/started" && isUnknownRawResponseItemEvent(event)) {
+      const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+      appendAgentEventPart(assistant, eventToAgentEvent(event), event);
       continue;
     }
 
@@ -84,6 +97,11 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
           result: rawToolOutput.output,
           aggregatedOutput: typeof rawToolOutput.output === "string" ? rawToolOutput.output : formatJsonValue(rawToolOutput.output)
         }));
+        continue;
+      }
+      if (isUnknownRawResponseItemEvent(event)) {
+        const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+        appendAgentEventPart(assistant, eventToAgentEvent(event), event);
       }
       continue;
     }
@@ -119,10 +137,16 @@ export function eventsToMessages(events: BridgeEvent[]): UiMessage[] {
     if (isCodexToolItem(item)) {
       const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
       upsertAssistantToolPart(assistant, normalizeToolCallFromItem(item));
+      continue;
+    }
+
+    if (isUnknownCodexItemEvent(event)) {
+      const assistant = ensureAssistantTurn(messages, byTurn, turnId, event.createdAt);
+      appendAgentEventPart(assistant, eventToAgentEvent(event), event);
     }
   }
 
-  return messages.filter((message) => message.role === "assistant" ? Boolean(message.text.trim() || message.assistantParts?.length || message.steerMessages?.length) : true);
+  return messages.filter((message) => message.role === "assistant" ? Boolean(message.text.trim() || message.assistantParts?.length || message.steerMessages?.length || message.statusText) : true);
 }
 
 export function threadReadToMessages(input: unknown): UiMessage[] {
@@ -366,7 +390,18 @@ function upsertReasoningPart(message: UiMessage, partId: string, text: string, s
     : [...parts, { type: "reasoning", id: partId, text, summary }];
 }
 
-function upsertSteerMessage(message: UiMessage, steer: { id: string; text: string; status: "queued" | "sent" | "failed" }): void {
+function appendAgentEventPart(message: UiMessage, event: UiAgentEvent, source: BridgeEvent): void {
+  message.assistantParts = [
+    ...(message.assistantParts ?? []),
+    {
+      type: "agentEvent",
+      id: agentEventPartId(source, message.assistantParts?.length ?? 0),
+      event
+    }
+  ];
+}
+
+function upsertSteerMessage(message: UiMessage, steer: { id: string; text: string; status: "queued" | "submitted" | "sent" | "failed" }): void {
   const existing = message.steerMessages ?? [];
   if (existing.some((item) => item.id === steer.id || item.text === steer.text)) {
     message.steerMessages = existing.map((item) => item.id === steer.id || item.text === steer.text ? { ...item, ...steer } : item);
@@ -376,7 +411,7 @@ function upsertSteerMessage(message: UiMessage, steer: { id: string; text: strin
   message.assistantParts = upsertSteerPart(message.assistantParts, steer);
 }
 
-function upsertSteerPart(current: UiAssistantPart[] | undefined, steer: { id: string; text: string; status: "queued" | "sent" | "failed" }): UiAssistantPart[] {
+function upsertSteerPart(current: UiAssistantPart[] | undefined, steer: { id: string; text: string; status: "queued" | "submitted" | "sent" | "failed" }): UiAssistantPart[] {
   const parts = current ?? [];
   if (!parts.some((part) => part.type === "steer" && (part.id === steer.id || part.text === steer.text))) {
     return [...parts, { type: "steer", ...steer }];

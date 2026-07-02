@@ -44,7 +44,6 @@ describe("notification routes", () => {
         getThreadGoal: async () => ({}),
         clearThreadGoal: async () => ({}),
         setThreadName: async () => ({}),
-        getConversationSummary: async () => ({}),
         startTurn: async () => ({}),
         startTurnItems: async () => ({}),
         interruptTurn: async () => ({}),

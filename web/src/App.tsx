@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { api, isAuthRequiredError, wsUrl } from "./api";
+import { agentEventPartId, eventToAgentEvent, isAgentEventSourceEvent, isGenericTurnAgentEventSourceEvent, isUnknownCodexItemEvent, isUnknownRawResponseItemEvent } from "./agent-events";
 import { ChatPane } from "./components/ChatPane";
 import { Composer } from "./components/Composer";
 import { ApprovalStack } from "./components/ApprovalStack";
@@ -8,9 +9,9 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { durationFromTiming, formatJsonValue, isCodexToolItem, isContextCompactionItem, normalizeContextCompactionMarker, normalizeRawResponseToolCall, normalizeRawResponseToolOutput, normalizeTokenUsage, normalizeToolCallFromItem, normalizeTurnStartedAt, normalizeTurnTiming, readPath } from "./codex-normalizers";
 import { createClientId } from "./id";
-import { appendOptimisticTurnMessages, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "./message-ordering";
+import { appendOptimisticTurnMessages, messagesBeforeRollbackTarget, mergeLoadedMessagesWithCurrent, upsertContextCompactionMarkerMessage } from "./message-ordering";
 import { eventsToMessages, threadReadToMessages } from "./thread-history";
-import type { AuthStatus, CapabilityPayload, ComposerCommandMode, PendingApproval, PendingCompactMessage, QueuedSteerMessage, ReasoningEffort, SendBehavior, StatusPayload, TaskSummary, ThemeRecord, ThreadSummary, ToolGroupCollapseMode, UiAssistantPart, UiMessage, UiThread, UiThreadActivityIndicator, UiToolCall, UiWorkspace, UploadedAttachment, UserPreferences, WorkMode } from "./types";
+import type { AuthStatus, CapabilityPayload, ComposerCommandMode, PendingApproval, PendingCompactMessage, QueuedSteerMessage, ReasoningEffort, SendBehavior, StatusPayload, TaskSummary, ThemeRecord, ThreadGoal, ThreadGoalStatus, ThreadSummary, ToolGroupCollapseMode, UiAgentEvent, UiAssistantPart, UiMessage, UiThread, UiThreadActivityIndicator, UiToolCall, UiWorkspace, UploadedAttachment, UserPreferences, WorkMode } from "./types";
 
 const DEFAULT_HISTORY_CACHE_TURNS = 30;
 const MIN_HISTORY_CACHE_TURNS = 20;
@@ -65,6 +66,7 @@ export function App() {
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [localRunningTurns, setLocalRunningTurns] = useState<Record<string, TaskSummary>>({});
+  const [threadGoals, setThreadGoals] = useState<Record<string, ThreadGoal | null>>({});
   const [draftTransition, setDraftTransition] = useState<{ threadId: string; projectName?: string } | null>(null);
   const [toolGroupCollapseMode, setToolGroupCollapseMode] = useState<ToolGroupCollapseMode>("alwaysExpanded");
   const [approvalDetailsCollapsedByDefault, setApprovalDetailsCollapsedByDefault] = useState(true);
@@ -75,7 +77,7 @@ export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(286);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isMobileLayout, setIsMobileLayout] = useState(isMobileViewport());
-  const [mobileJumpRailOpen, setMobileJumpRailOpen] = useState(false);
+  const [mobileRightDrawerOpen, setMobileRightDrawerOpen] = useState(false);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus & { loaded: boolean }>({ enabled: true, authenticated: false, loaded: false });
   const [authLoading, setAuthLoading] = useState(false);
@@ -88,11 +90,14 @@ export function App() {
   const statusRefreshInFlightRef = useRef(false);
   const activityStartedThreadIdsRef = useRef<Set<string>>(new Set());
   const userMessageCountByTurnRef = useRef<Record<string, number>>({});
+  const userMessageItemKeysByTurnRef = useRef<Record<string, Set<string>>>({});
   const autoLoginAttemptedRef = useRef(false);
   const authDecisionResolvedRef = useRef(false);
   const manualLoginWithoutRememberRef = useRef(false);
   const pendingThreadShellsRef = useRef<Map<string, PendingThreadShell>>(new Map());
   const restoredThreadLoadAttemptRef = useRef<string | null>(null);
+  const rollbackTargetUserMessageIdsRef = useRef<Record<string, string>>({});
+  const commandExplanationRequestsRef = useRef<Set<string>>(new Set());
   const authReady = authStatus.loaded && (!authStatus.enabled || authStatus.authenticated);
 
   useEffect(() => {
@@ -123,6 +128,11 @@ export function App() {
     if (!authReady) return;
     writeStoredActiveSelection(activeCwd, activeThreadId);
   }, [authReady, activeCwd, activeThreadId]);
+
+  useEffect(() => {
+    if (!authReady || !activeThreadId) return;
+    void loadThreadGoal(activeThreadId);
+  }, [authReady, activeThreadId]);
 
   useEffect(() => {
     void refreshAuthStatus();
@@ -222,7 +232,7 @@ export function App() {
       if (query.matches) {
         setSidebarCollapsed(true);
       } else {
-        setMobileJumpRailOpen(false);
+        setMobileRightDrawerOpen(false);
       }
     }
     applyMobileDefaults();
@@ -232,7 +242,7 @@ export function App() {
 
   useEffect(() => {
     if (!isMobileLayout) {
-      setMobileJumpRailOpen(false);
+      setMobileRightDrawerOpen(false);
     }
   }, [isMobileLayout]);
 
@@ -371,6 +381,37 @@ export function App() {
     } catch (error) {
       console.error("Failed to load approvals", error);
     }
+  }
+
+  async function loadThreadGoal(threadId: string) {
+    try {
+      const result = await api.getThreadGoal(threadId);
+      setThreadGoalLocal(threadId, normalizeThreadGoal(readPath<unknown>(result, ["goal"]) ?? readPath<unknown>(result, ["data", "goal"])));
+    } catch (error) {
+      console.error("Failed to load thread goal", error);
+    }
+  }
+
+  function setThreadGoalLocal(threadId: string, goal: ThreadGoal | null) {
+    setThreadGoals((current) => ({ ...current, [threadId]: goal }));
+  }
+
+  async function createGoal(threadId: string, objective: string) {
+    const result = await api.setThreadGoal(threadId, { objective, status: "active" });
+    setThreadGoalLocal(threadId, normalizeThreadGoal(readPath<unknown>(result, ["goal"]) ?? readPath<unknown>(result, ["data", "goal"])) ?? optimisticGoal(threadId, objective, "active"));
+  }
+
+  async function setGoalStatus(threadId: string, status: ThreadGoalStatus) {
+    const currentGoal = threadGoals[threadId];
+    if (currentGoal) setThreadGoalLocal(threadId, { ...currentGoal, status, updatedAt: Date.now() / 1000 });
+    const result = await api.setThreadGoal(threadId, { status });
+    const nextGoal = readPath<unknown>(result, ["goal"]) ?? readPath<unknown>(result, ["data", "goal"]);
+    setThreadGoalLocal(threadId, normalizeThreadGoal(nextGoal));
+  }
+
+  async function clearGoal(threadId: string) {
+    setThreadGoalLocal(threadId, null);
+    await api.clearThreadGoal(threadId);
   }
 
   async function refreshCurrentView() {
@@ -512,6 +553,12 @@ export function App() {
     if (event.type.startsWith("codex.request.") || event.type === "codex.serverRequest/resolved") {
       void refreshApprovals();
     }
+    if (isAgentEventSourceEvent(event)) {
+      if (event.threadId && event.turnId) {
+        appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
+      }
+      return;
+    }
     if (event.type === "codex.item/agentMessage/delta") {
       const delta = readPath<string>(event, ["payload", "params", "delta"]);
       const itemId = readPath<string>(event, ["payload", "params", "itemId"]);
@@ -536,11 +583,18 @@ export function App() {
       }
       return;
     }
+    if (event.type === "codex.rawResponseItem/started") {
+      if (event.threadId && event.turnId && isUnknownRawResponseItemEvent(event)) {
+        appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
+      }
+      return;
+    }
     if (event.type === "codex.rawResponseItem/completed") {
       const item = readPath<Record<string, unknown>>(event, ["payload", "params", "item"]);
       const rawToolCall = normalizeRawResponseToolCall(item);
       if (event.threadId && rawToolCall) {
         upsertToolCall(event.threadId, event.turnId, rawToolCall);
+        requestCommandExplanation(event.threadId, event.turnId, rawToolCall, options);
         return;
       }
       const rawToolOutput = normalizeRawResponseToolOutput(item);
@@ -553,6 +607,10 @@ export function App() {
         }));
         return;
       }
+      if (event.threadId && event.turnId && isUnknownRawResponseItemEvent(event)) {
+        appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
+      }
+      return;
     }
     if (event.type === "codex.item/completed") {
       const item = readPath<Record<string, unknown>>(event, ["payload", "params", "item"]);
@@ -562,16 +620,7 @@ export function App() {
         return;
       }
       if (event.threadId && event.turnId && item?.type === "userMessage") {
-        const seen = userMessageCountByTurnRef.current[event.turnId] ?? 0;
-        userMessageCountByTurnRef.current[event.turnId] = seen + 1;
-        const text = textFromUserItem(item);
-        if (seen > 0 && text) {
-          upsertAssistantSteer(event.threadId, event.turnId, {
-            id: String(item.id ?? `steer-${event.turnId}-${seen}`),
-            text,
-            status: "sent"
-          });
-        }
+        confirmUserMessageItem(event.threadId, event.turnId, item);
         return;
       }
       if (event.threadId && item?.type === "agentMessage" && typeof item.id === "string" && typeof item.text === "string") {
@@ -579,12 +628,22 @@ export function App() {
         return;
       }
       if (event.threadId && isCodexToolItem(item)) {
-        upsertToolCall(event.threadId, event.turnId, normalizeToolCallFromItem(item));
+        const toolCall = normalizeToolCallFromItem(item);
+        upsertToolCall(event.threadId, event.turnId, toolCall);
+        requestCommandExplanation(event.threadId, event.turnId, toolCall, options);
+        return;
+      }
+      if (event.threadId && event.turnId && isUnknownCodexItemEvent(event)) {
+        appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
       }
       return;
     }
     if (event.type === "codex.item/started") {
       const item = readPath<Record<string, unknown>>(event, ["payload", "params", "item"]);
+      if (event.threadId && event.turnId && item?.type === "userMessage") {
+        confirmUserMessageItem(event.threadId, event.turnId, item);
+        return;
+      }
       if (event.threadId && isContextCompactionItem(item)) {
         const isManualCompact = Boolean(pendingCompactTurnsRef.current[event.threadId]);
         bindPendingCompactTurn(event.threadId, event.turnId);
@@ -595,7 +654,13 @@ export function App() {
         return;
       }
       if (event.threadId && isCodexToolItem(item)) {
-        upsertToolCall(event.threadId, event.turnId, normalizeToolCallFromItem(item));
+        const toolCall = normalizeToolCallFromItem(item);
+        upsertToolCall(event.threadId, event.turnId, toolCall);
+        requestCommandExplanation(event.threadId, event.turnId, toolCall, options);
+        return;
+      }
+      if (event.threadId && event.turnId && isUnknownCodexItemEvent(event)) {
+        appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
       }
       return;
     }
@@ -638,20 +703,24 @@ export function App() {
           const turnId = event.turnId ?? readPath<string>(event, ["payload", "turnId"]);
           const startedAt = normalizeTurnStartedAt(event);
           if (turnId) userMessageCountByTurnRef.current[turnId] = 0;
+          if (turnId) userMessageItemKeysByTurnRef.current[turnId] = new Set();
           if (!options.replay) {
             if (event.threadId && turnId && pendingCompactTurnsRef.current[event.threadId]) {
               bindPendingCompactTurn(event.threadId, turnId);
               markCompactGenerating(event.threadId, turnId);
             }
             if (turnId) markThreadGenerating(event.threadId, turnId, startedAt);
-            markQueuedSteersSent(event.threadId);
           }
         } else {
           const endStatus = eventThreadStatus(event);
           const completedTurnId = event.turnId ?? readPath<string>(event, ["payload", "turnId"]) ?? readPath<string>(event, ["payload", "params", "turn", "id"]);
           const completedTask = findTaskByTurn(event.threadId, completedTurnId);
           const wasCompactTurn = completedTask?.kind === "compact" || threadHasCompactAssistant(event.threadId, completedTurnId);
-          markThreadFinished(event.threadId, normalizeTurnTiming(event), turnStatusLine(endStatus, event));
+          const statusLine = turnStatusLine(endStatus, event);
+          markThreadFinished(event.threadId, normalizeTurnTiming(event), statusLine);
+          if (endStatus === "completed" && completedTurnId) {
+            window.setTimeout(() => clearTurnStatusText(event.threadId!, completedTurnId, "已结束"), 300);
+          }
           if (!options.replay) {
             markThreadActivityFinished(event.threadId, endStatus === "failed" || endStatus === "interrupted" ? "failed" : "completed");
             if (wasCompactTurn && endStatus !== "failed" && endStatus !== "interrupted") {
@@ -670,6 +739,15 @@ export function App() {
       const name = readPath<string>(event, ["payload", "params", "name"]);
       if (event.threadId && name) renameThreadLocal(event.threadId, name);
     }
+    if (event.type === "codex.thread/goal/updated") {
+      const threadId = event.threadId ?? readPath<string>(event, ["payload", "params", "threadId"]);
+      const goal = readPath<unknown>(event, ["payload", "params", "goal"]);
+      if (threadId) setThreadGoalLocal(threadId, normalizeThreadGoal(goal));
+    }
+    if (event.type === "codex.thread/goal/cleared") {
+      const threadId = event.threadId ?? readPath<string>(event, ["payload", "params", "threadId"]);
+      if (threadId) setThreadGoalLocal(threadId, null);
+    }
     if (event.type === "codex.thread/settings/updated") {
       const settings = readPath<Record<string, unknown>>(event, ["payload", "params", "threadSettings"]);
       if (settings && event.threadId === activeThreadId) {
@@ -680,6 +758,9 @@ export function App() {
         const nextEffort = settings.effort as ReasoningEffort | null | undefined;
         if (isReasoningEffort(nextEffort)) setEffort(nextEffort);
       }
+    }
+    if (event.threadId && event.turnId && isGenericTurnAgentEventSourceEvent(event)) {
+      appendAgentEvent(event.threadId, event.turnId, eventToAgentEvent(event), event);
     }
   }
 
@@ -760,6 +841,49 @@ export function App() {
     })));
   }
 
+  function requestCommandExplanation(threadId: string, turnId: string | undefined, toolCall: UiToolCall, options: BridgeEventOptions) {
+    if (options.replay) return;
+    if (toolCall.type !== "commandExecution") return;
+    const command = toolCall.command.trim();
+    if (!command || toolCall.commandExplanation) return;
+    const requestKey = `${threadId}:${toolCall.id}:${command}`;
+    if (commandExplanationRequestsRef.current.has(requestKey)) return;
+    commandExplanationRequestsRef.current.add(requestKey);
+    void api.explainCommand({
+      command,
+      threadId,
+      turnId,
+      toolCallId: toolCall.id
+    })
+      .then(({ explanation }) => {
+        const clean = explanation.trim();
+        if (!clean) return;
+        updateToolCallExplanation(threadId, turnId, toolCall.id, clean);
+      })
+      .catch(() => {
+        // AI assist is optional; command execution should not surface or block on explanation failures.
+      });
+  }
+
+  function updateToolCallExplanation(threadId: string, turnId: string | undefined, itemId: string, explanation: string) {
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => {
+        if (thread.id !== threadId) return thread;
+        return {
+          ...thread,
+          messages: withAssistantTurnMessage(thread, turnId, (message) => ({
+            ...message,
+            assistantParts: updateAssistantToolPart(message.assistantParts, itemId, (toolCall) => ({
+              ...toolCall,
+              commandExplanation: explanation
+            }))
+          }))
+        };
+      })
+    })));
+  }
+
   function updateToolCall(threadId: string, turnId: string | undefined, itemId: string, updater: (toolCall: UiToolCall) => UiToolCall) {
     setWorkspaces((current) => current.map((workspace) => ({
       ...workspace,
@@ -788,6 +912,23 @@ export function App() {
           messages: withAssistantTurnMessage(thread, turnId, (message) => ({
             ...message,
             tokenUsage
+          }))
+        };
+      })
+    })));
+  }
+
+  function appendAgentEvent(threadId: string, turnId: string | undefined, event: UiAgentEvent, source: BridgeEventLike) {
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => {
+        if (thread.id !== threadId) return thread;
+        return {
+          ...thread,
+          messages: withAssistantTurnMessage(thread, turnId, (message) => ({
+            ...message,
+            assistantParts: appendAgentEventPart(message.assistantParts, event, source),
+            isStreaming: message.isStreaming || event.kind !== "error"
           }))
         };
       })
@@ -898,16 +1039,13 @@ export function App() {
       ...current,
       [threadId]: [...(current[threadId] ?? []), item]
     }));
-    upsertAssistantSteer(threadId, turnId, item);
     try {
-      await api.steer(threadId, text, turnId);
-      upsertAssistantSteer(threadId, turnId, { ...item, status: "sent" });
+      await api.steer(threadId, text, turnId, id);
       setQueuedSteers((current) => ({
         ...current,
-        [threadId]: (current[threadId] ?? []).map((queued) => queued.id === id ? { ...queued, status: "sent" } : queued)
+        [threadId]: (current[threadId] ?? []).map((queued) => queued.id === id ? { ...queued, status: "submitted" } : queued)
       }));
     } catch {
-      upsertAssistantSteer(threadId, turnId, { ...item, status: "failed" });
       setQueuedSteers((current) => ({
         ...current,
         [threadId]: (current[threadId] ?? []).map((queued) => queued.id === id ? { ...queued, status: "failed" } : queued)
@@ -915,11 +1053,38 @@ export function App() {
     }
   }
 
+  function confirmUserMessageItem(threadId: string, turnId: string, item: Record<string, unknown>) {
+    const text = textFromUserItem(item);
+    if (!text) return;
+    const clientId = typeof item.clientId === "string" && item.clientId.trim() ? item.clientId : undefined;
+    const itemId = typeof item.id === "string" && item.id.trim() ? item.id : undefined;
+    const key = clientId ?? itemId ?? `${turnId}:${text}`;
+    const seenItems = userMessageItemKeysByTurnRef.current[turnId] ?? new Set<string>();
+    if (seenItems.has(key)) return;
+    seenItems.add(key);
+    userMessageItemKeysByTurnRef.current[turnId] = seenItems;
+
+    const seenMessages = userMessageCountByTurnRef.current[turnId] ?? 0;
+    userMessageCountByTurnRef.current[turnId] = seenMessages + 1;
+    if (seenMessages === 0) return;
+
+    const steer: QueuedSteerMessage = {
+      id: clientId ?? itemId ?? `steer-${turnId}-${seenMessages}`,
+      text,
+      status: "sent"
+    };
+    upsertAssistantSteer(threadId, turnId, steer);
+    setQueuedSteers((current) => ({
+      ...current,
+      [threadId]: (current[threadId] ?? []).filter((queued) => queued.id !== steer.id && queued.text !== steer.text)
+    }));
+  }
+
   function removeQueuedSteer(threadId: string, steerId: string) {
     removeAssistantSteer(threadId, steerId);
     setQueuedSteers((current) => ({
       ...current,
-      [threadId]: (current[threadId] ?? []).filter((item) => item.id !== steerId || item.status === "sent")
+      [threadId]: (current[threadId] ?? []).filter((item) => item.id !== steerId || item.status === "submitted" || item.status === "sent")
     }));
     setPendingCompactMessages((current) => ({
       ...current,
@@ -961,35 +1126,10 @@ export function App() {
     })));
   }
 
-  function markQueuedSteersSent(threadId: string) {
-    setQueuedSteers((current) => ({
-      ...current,
-      [threadId]: (current[threadId] ?? []).map((item) => item.status === "queued" ? { ...item, status: "sent" } : item)
-    }));
-  }
-
   async function sendMessage(text: string, attachments: UploadedAttachment[]) {
     const targetThread = activeThread(workspaces, activeThreadId);
     const targetCwd = activeCwd ?? targetThread?.cwd;
     if (!targetCwd) throw new Error("请先选择项目");
-    if (commandMode === "goal") {
-      const objective = text.trim();
-      if (!objective) return;
-      let threadId = activeThreadId;
-      if (!targetThread || targetThread.isDraft || targetThread.messages.length === 0) {
-        const created = await api.startThread({ cwd: targetCwd, ...threadOverridesFor(workMode, model) });
-        const createdThreadId = created.thread?.id;
-        if (!createdThreadId) throw new Error("无法创建目标会话");
-        threadId = createdThreadId;
-        rememberPendingThreadShell(targetCwd, threadId);
-        setActiveThreadId(threadId);
-        activeThreadIdRef.current = threadId;
-      }
-      if (!threadId) throw new Error("无法创建目标会话");
-      await api.setThreadGoal(threadId, { objective, status: "active" });
-      await refreshProjectsAndThreads();
-      return;
-    }
     const runningTask = activeThreadId ? runningTaskFor(activeThreadId, allRunningTasks(tasks, localRunningTurns)) : undefined;
     if (activeThreadId && runningTask?.kind === "compact" && (text.trim() || attachments.length)) {
       queuePendingCompactMessage(activeThreadId, text.trim(), attachments);
@@ -1037,6 +1177,9 @@ export function App() {
       }, 1200);
     } catch (error) {
       if (realThreadId) {
+        appendAgentEvent(realThreadId, undefined, localErrorAgentEvent(error), localAgentEventSource("local.turn.error"));
+      }
+      if (realThreadId) {
         markThreadFinished(realThreadId);
         markThreadActivityFinished(realThreadId, "failed");
         finishPendingAssistant(realThreadId, "", error instanceof Error ? error.message : "生成失败", "danger");
@@ -1075,6 +1218,7 @@ export function App() {
         void refreshStatus();
       }, 1200);
     } catch (error) {
+      appendAgentEvent(threadId, undefined, localErrorAgentEvent(error), localAgentEventSource("local.turn.error"));
       markThreadFinished(threadId);
       markThreadActivityFinished(threadId, "failed");
       finishPendingAssistant(threadId, "", error instanceof Error ? error.message : "生成失败", "danger");
@@ -1145,6 +1289,11 @@ export function App() {
         const next = { ...current };
         delete next[threadId];
         return next;
+      });
+    }
+    if (threadGoals[threadId]?.status === "active") {
+      void setGoalStatus(threadId, "paused").catch((error) => {
+        console.error("Failed to pause goal while stopping generation", error);
       });
     }
     await api.interrupt(threadId, task.turnId);
@@ -1286,18 +1435,6 @@ export function App() {
     void api.pinThread(cwd, threadId).then(() => refreshProjectsAndThreads()).catch(() => refreshProjectsAndThreads());
   }
 
-  async function regenerateThreadTitle(cwd: string, threadId: string) {
-    const thread = workspaces.find((workspace) => workspace.cwd === cwd)?.threads.find((item) => item.id === threadId);
-    const fallback = titleFromMessage(thread?.messages.find((message) => message.role === "user")?.text || thread?.title || "新对话");
-    try {
-      const result = await api.generateThreadTitle(threadId);
-      const title = generatedTitleFrom(result) ?? fallback;
-      updateThreadState(setWorkspaces, cwd, (threads) => threads.map((item) => item.id === threadId ? { ...item, title } : item));
-    } catch {
-      updateThreadState(setWorkspaces, cwd, (threads) => threads.map((item) => item.id === threadId ? { ...item, title: fallback } : item));
-    }
-  }
-
   async function renameThread(cwd: string, threadId: string, title: string) {
     updateThreadState(setWorkspaces, cwd, (threads) => threads.map((thread) => (
       thread.id === threadId ? { ...thread, title } : thread
@@ -1329,10 +1466,11 @@ export function App() {
     } else if (count > 0) {
       await api.rollback(selectedThread.id, count);
     }
+    rollbackTargetUserMessageIdsRef.current[selectedThread.id] = clicked.id;
     setComposerText(clicked.text);
     setComposerAttachments(clicked.attachments ?? []);
     updateThread(selectedThread.cwd, selectedThread.id, {
-      messages: selectedThread.messages.slice(0, messageIndex),
+      messages: messagesBeforeRollbackTarget(selectedThread.messages, clicked.id),
       needsResume: false
     });
   }
@@ -1437,7 +1575,9 @@ export function App() {
       const runningTask = runningTaskFor(threadId, allRunningTasks(tasksRef.current, localRunningTurns));
       const loadedMessages = eventMessages.length ? mergeUserMessages(threadReadToMessages(thread), eventMessages) : threadReadToMessages(thread);
       const currentMessages = activeThread(workspacesRef.current, threadId)?.messages ?? target.messages;
-      const messages = mergeLoadedMessagesWithCurrent(applyRunningTaskToMessages(loadedMessages, runningTask), currentMessages);
+      const messages = mergeLoadedMessagesWithCurrent(applyRunningTaskToMessages(loadedMessages, runningTask), currentMessages, {
+        rollbackTargetUserMessageId: rollbackTargetUserMessageIdsRef.current[threadId]
+      });
       updateThread(cwd, threadId, {
         messages,
         needsResume: true,
@@ -1475,6 +1615,19 @@ export function App() {
       }
     }));
     markThreadActivityRunning(threadId);
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => thread.id === threadId
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) => (
+              message.role === "assistant" && (message.turnId === turnId || message.id === assistantTurnMessageId(turnId))
+                ? { ...message, statusText: message.statusText ?? "正在开始请求", statusTone: "muted" }
+                : message
+            ))
+          }
+        : thread)
+    })));
   }
 
   function appendOptimisticTurn(threadId: string, turnId: string, text: string, attachments: UploadedAttachment[]) {
@@ -1564,6 +1717,22 @@ export function App() {
     })));
   }
 
+  function clearTurnStatusText(threadId: string, turnId: string, statusText: string) {
+    setWorkspaces((current) => current.map((workspace) => ({
+      ...workspace,
+      threads: workspace.threads.map((thread) => thread.id === threadId
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) => (
+              message.role === "assistant" && message.turnId === turnId && message.statusText === statusText
+                ? { ...message, statusText: undefined, statusTone: undefined }
+                : message
+            ))
+          }
+        : thread)
+    })));
+  }
+
   function finishPendingAssistant(threadId: string, text: string, statusText?: string, statusTone?: UiMessage["statusTone"]) {
     setWorkspaces((current) => current.map((workspace) => ({
       ...workspace,
@@ -1580,6 +1749,7 @@ export function App() {
   }
 
   const selectedThread = activeThread(workspaces, activeThreadId);
+  const selectedGoal = activeThreadId ? threadGoals[activeThreadId] ?? null : null;
   const effectiveCwd = activeCwd ?? selectedThread?.cwd;
   const selectedWorkspace = workspaces.find((workspace) => workspace.cwd === effectiveCwd);
   const runningTasks = allRunningTasks(tasks, localRunningTurns);
@@ -1609,8 +1779,8 @@ export function App() {
   const handleForkMessage = useCallback((messageId: string) => {
     void forkFromMessageRef.current(messageId);
   }, []);
-  const handleRequestCollapseMobileJumpRail = useCallback(() => {
-    setMobileJumpRailOpen(false);
+  const handleRequestCloseMobileRightDrawer = useCallback(() => {
+    setMobileRightDrawerOpen(false);
   }, []);
   const isDraft = !selectedThread || selectedThread.isDraft;
   const isDraftTransitioning = Boolean(draftTransition && selectedThread && draftTransition.threadId === selectedThread.id && !isDraft);
@@ -1675,7 +1845,6 @@ export function App() {
         }}
         onRestoreProject={restoreProject}
         onPinThread={pinThread}
-        onRegenerateThreadTitle={regenerateThreadTitle}
         onRenameThread={renameThread}
         onExportThread={exportThread}
         onDeleteThread={deleteThread}
@@ -1736,9 +1905,6 @@ export function App() {
           onRefreshCapabilities={() => void refreshCapabilities()}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
-          isMobileLayout={isMobileLayout}
-          mobileJumpRailOpen={mobileJumpRailOpen}
-          onToggleMobileJumpRail={() => setMobileJumpRailOpen((current) => !current)}
         />
         {isDraft ? (
           <main className="draft-stage">
@@ -1756,6 +1922,8 @@ export function App() {
               composerAttachments,
               commandMode,
               sendBehavior: effectiveSendBehavior(isMobileLayout, desktopSendBehavior, mobileSendBehavior),
+              goal: selectedGoal,
+              pendingSteers: selectedQueuedSteers,
               setActiveCwd,
               createThread,
               setWorkMode,
@@ -1764,6 +1932,7 @@ export function App() {
               setComposerText,
               setComposerAttachments,
               onCommandModeChange: setCommandMode,
+              onRemovePendingSteer: handleRemoveQueuedSteer,
               onRunCompact: () => void runCompact(),
               onRunInit: () => void runInit(),
               sendMessage,
@@ -1791,14 +1960,18 @@ export function App() {
               toolGroupCollapseMode={toolGroupCollapseMode}
               renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
               historyCacheTurnLimit={historyCacheTurnLimit}
-              queuedSteers={selectedQueuedSteers}
               runningTask={selectedRunningTask}
-              onRemoveQueuedSteer={handleRemoveQueuedSteer}
               onRollbackMessage={handleRollbackMessage}
               onForkMessage={handleForkMessage}
+              goal={selectedGoal}
+              onCreateGoal={(objective) => selectedThread ? createGoal(selectedThread.id, objective) : undefined}
+              onPauseGoal={() => selectedThread ? setGoalStatus(selectedThread.id, "paused") : undefined}
+              onResumeGoal={() => selectedThread ? setGoalStatus(selectedThread.id, "active") : undefined}
+              onClearGoal={() => selectedThread ? clearGoal(selectedThread.id) : undefined}
               isMobileLayout={isMobileLayout}
-              mobileJumpRailOpen={mobileJumpRailOpen}
-              onRequestCollapseMobileJumpRail={handleRequestCollapseMobileJumpRail}
+              mobileRightDrawerOpen={mobileRightDrawerOpen}
+              onToggleMobileRightDrawer={() => setMobileRightDrawerOpen((current) => !current)}
+              onRequestCloseMobileRightDrawer={handleRequestCloseMobileRightDrawer}
             />
             <ApprovalStack
               approvals={pendingApprovals}
@@ -1829,6 +2002,8 @@ export function App() {
               composerAttachments,
               commandMode,
               sendBehavior: effectiveSendBehavior(isMobileLayout, desktopSendBehavior, mobileSendBehavior),
+              goal: selectedGoal,
+              pendingSteers: selectedQueuedSteers,
               setActiveCwd,
               createThread,
               setWorkMode,
@@ -1837,6 +2012,7 @@ export function App() {
               setComposerText,
               setComposerAttachments,
               onCommandModeChange: setCommandMode,
+              onRemovePendingSteer: handleRemoveQueuedSteer,
               onRunCompact: () => void runCompact(),
               onRunInit: () => void runInit(),
               sendMessage,
@@ -1924,6 +2100,39 @@ function textFromUserItem(item: Record<string, unknown>): string {
     .join("\n");
 }
 
+function localAgentEvent(kind: UiAgentEvent["kind"], title: string, details?: unknown): UiAgentEvent {
+  return {
+    kind,
+    title,
+    tone: kind === "error" ? "danger" : kind === "warning" ? "warning" : "muted",
+    details,
+    createdAt: Date.now(),
+    eventType: "local"
+  };
+}
+
+function localErrorAgentEvent(error: unknown): UiAgentEvent {
+  return localAgentEvent("error", error instanceof Error ? error.message : "请求失败", errorDetails(error));
+}
+
+function errorDetails(error: unknown): unknown {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    };
+  }
+  return error;
+}
+
+function localAgentEventSource(type: string): BridgeEventLike {
+  return {
+    type,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function upsertAssistantToolPart(current: UiAssistantPart[] | undefined, toolCall: UiToolCall): UiAssistantPart[] {
   const parts = current ?? [];
   if (!parts.some((part) => part.type === "tool" && part.id === toolCall.id)) {
@@ -1948,6 +2157,15 @@ function updateAssistantToolPart(current: UiAssistantPart[] | undefined, itemId:
     }];
   }
   return parts.map((part) => part.type === "tool" && part.id === itemId ? { ...part, toolCall: updater(part.toolCall) } : part);
+}
+
+function appendAgentEventPart(current: UiAssistantPart[] | undefined, event: UiAgentEvent, source: BridgeEventLike): UiAssistantPart[] {
+  const parts = current ?? [];
+  return [...parts, {
+    type: "agentEvent",
+    id: agentEventPartId(source, parts.length),
+    event
+  }];
 }
 
 function upsertSteerList(current: QueuedSteerMessage[] | undefined, steer: QueuedSteerMessage): QueuedSteerMessage[] {
@@ -2252,6 +2470,8 @@ function composer(input: {
   composerAttachments: UploadedAttachment[];
   commandMode: ComposerCommandMode | null;
   sendBehavior: SendBehavior;
+  goal?: ThreadGoal | null;
+  pendingSteers?: QueuedSteerMessage[];
   setActiveCwd: (cwd: string) => void;
   createThread: (cwd?: string) => void;
   setWorkMode: (mode: WorkMode) => void;
@@ -2260,6 +2480,7 @@ function composer(input: {
   setComposerText: (text: string) => void;
   setComposerAttachments: (attachments: UploadedAttachment[]) => void;
   onCommandModeChange: (mode: ComposerCommandMode | null) => void;
+  onRemovePendingSteer?: (id: string) => void;
   onRunCompact: () => void;
   onRunInit: () => void;
   sendMessage: (text: string, attachments: UploadedAttachment[]) => Promise<void>;
@@ -2284,9 +2505,12 @@ function composer(input: {
       attachments={input.composerAttachments}
       commandMode={input.commandMode}
       sendBehavior={input.sendBehavior}
+      goal={input.goal}
+      pendingSteers={input.pendingSteers}
       onTextChange={input.setComposerText}
       onAttachmentsChange={input.setComposerAttachments}
       onCommandModeChange={input.onCommandModeChange}
+      onRemovePendingSteer={input.onRemovePendingSteer}
       onRunCompact={input.onRunCompact}
       onRunInit={input.onRunInit}
       isGenerating={input.isGenerating}
@@ -2321,13 +2545,6 @@ function titleFromMessage(text: string): string {
   return `${normalized.slice(0, 28)}...`;
 }
 
-function generatedTitleFrom(input: unknown): string | undefined {
-  if (typeof input === "string" && input.trim()) return input.trim();
-  if (!input || typeof input !== "object") return undefined;
-  const record = input as Record<string, unknown>;
-  return firstString(record.title, record.name, record.summary, record.text);
-}
-
 function firstString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value;
@@ -2357,10 +2574,10 @@ function parseEventCreatedAt(event: BridgeEventLike | undefined): number | undef
   return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
-function allRunningTasks(tasks: TaskSummary[], localRunningTurns: Record<string, TaskSummary>): TaskSummary[] {
+export function allRunningTasks(tasks: TaskSummary[], localRunningTurns: Record<string, TaskSummary>): TaskSummary[] {
   const byThread = new Map<string, TaskSummary>();
-  for (const task of tasks.filter((item) => item.status === "running")) byThread.set(task.threadId, task);
   for (const task of Object.values(localRunningTurns)) byThread.set(task.threadId, task);
+  for (const task of tasks.filter((item) => item.status === "running")) byThread.set(task.threadId, task);
   return [...byThread.values()];
 }
 
@@ -2470,6 +2687,49 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return value === "low" || value === "medium" || value === "high" || value === "xhigh";
 }
 
+function isThreadGoalStatus(value: unknown): value is ThreadGoalStatus {
+  return value === "active"
+    || value === "paused"
+    || value === "blocked"
+    || value === "usageLimited"
+    || value === "budgetLimited"
+    || value === "complete";
+}
+
+export function normalizeThreadGoal(value: unknown): ThreadGoal | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const threadId = typeof record.threadId === "string" ? record.threadId : undefined;
+  const objective = typeof record.objective === "string" ? record.objective : undefined;
+  const status = isThreadGoalStatus(record.status) ? record.status : undefined;
+  if (!threadId || !objective || !status) return null;
+  if (status === "complete") return null;
+  return {
+    threadId,
+    objective,
+    status,
+    tokenBudget: typeof record.tokenBudget === "number" ? record.tokenBudget : null,
+    tokensUsed: typeof record.tokensUsed === "number" ? record.tokensUsed : 0,
+    timeUsedSeconds: typeof record.timeUsedSeconds === "number" ? record.timeUsedSeconds : 0,
+    createdAt: typeof record.createdAt === "number" ? record.createdAt : Date.now() / 1000,
+    updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : Date.now() / 1000
+  };
+}
+
+function optimisticGoal(threadId: string, objective: string, status: ThreadGoalStatus): ThreadGoal {
+  const now = Date.now() / 1000;
+  return {
+    threadId,
+    objective,
+    status,
+    tokenBudget: null,
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 function workModeFromSettings(settings: Record<string, unknown>): WorkMode | undefined {
   const approvalPolicy = settings.approvalPolicy;
   const approvalsReviewer = settings.approvalsReviewer;
@@ -2497,6 +2757,7 @@ function turnStatusLine(status: "completed" | "failed" | "interrupted" | undefin
       ?? readPath<string>(event, ["payload", "message"]);
     return { text: reason || "生成失败", tone: "danger" };
   }
+  if (status === "completed") return { text: "已结束", tone: "muted" };
   return undefined;
 }
 

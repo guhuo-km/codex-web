@@ -1404,13 +1404,11 @@ describe("CodexBridge", () => {
     await bridge.forkThread("thread-1", { model: "gpt-test" });
     await bridge.archiveThread("thread-1");
     await bridge.setThreadName("thread-1", "新标题");
-    await bridge.getConversationSummary("thread-1");
 
     expect(client.request.mock.calls).toEqual([
       ["thread/fork", { threadId: "thread-1", model: "gpt-test" }],
       ["thread/archive", { threadId: "thread-1" }],
       ["thread/name/set", { threadId: "thread-1", name: "新标题" }],
-      ["getConversationSummary", { conversationId: "thread-1" }]
     ]);
   });
 
@@ -2283,7 +2281,6 @@ describe("HTTP routes", () => {
     await requestJson(`${baseUrl}/api/threads/thread-1/goal`);
     await requestJson(`${baseUrl}/api/threads/thread-1/goal`, { method: "DELETE" });
     await requestJson(`${baseUrl}/api/threads/thread-1/name`, { method: "POST", body: { name: "新标题" } });
-    await requestJson(`${baseUrl}/api/threads/thread-1/title/generate`, { method: "POST", body: {} });
     await requestJson(`${baseUrl}/api/capabilities?cwd=D%3A%5Crepo`);
     const preferences = await requestJson(`${baseUrl}/api/preferences`);
     expect(preferences.data).toEqual(expect.objectContaining({ colorMode: "light", defaultWorkMode: "yolo", approvalDetailsCollapsedByDefault: true, sendBehavior: "enter" }));
@@ -2747,7 +2744,6 @@ function fakeBridge() {
     getThreadGoal: vi.fn(async () => ({ goal: null })),
     clearThreadGoal: vi.fn(async () => ({ removed: true })),
     setThreadName: vi.fn(async () => ({ thread: { id: "thread-1", name: "新标题" } })),
-    getConversationSummary: vi.fn(async () => ({ title: "生成标题" })),
     startTurn: vi.fn(async () => ({ turn: { id: "turn-1" } })),
     startTurnItems: vi.fn(async () => ({ turn: { id: "turn-1" } })),
     interruptTurn: vi.fn(async () => ({})),
@@ -2990,7 +2986,6 @@ export interface BridgeLike {
   getThreadGoal(threadId: string): Promise<unknown>;
   clearThreadGoal(threadId: string): Promise<unknown>;
   setThreadName(threadId: string, name: string): Promise<unknown>;
-  getConversationSummary(threadId: string): Promise<unknown>;
   startTurn(threadId: string, text: string, overrides?: Record<string, unknown>): Promise<unknown>;
   startTurnItems(threadId: string, input: Array<Record<string, unknown>>, overrides?: Record<string, unknown>): Promise<unknown>;
   interruptTurn(threadId: string, turnId: string): Promise<unknown>;
@@ -3390,9 +3385,6 @@ export function createRoutes(deps: RouteDeps): Router {
     ok(res, await deps.bridge.setThreadName(param(req.params.threadId), name));
   }));
 
-  router.post("/api/threads/:threadId/title/generate", asyncHandler(async (req, res) => {
-    ok(res, await deps.bridge.getConversationSummary(param(req.params.threadId)));
-  }));
 
   router.get("/api/capabilities", asyncHandler(async (req, res) => {
     const cwd = stringQuery(req.query.cwd);

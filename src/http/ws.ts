@@ -5,6 +5,7 @@ import { listTaskSummaries } from "../tasks/task-index.js";
 import type { BridgeLike } from "./routes.js";
 import type { LocalAuth } from "../auth/local-auth.js";
 import type { RuntimeDiagnostics } from "../runtime/diagnostics.js";
+import type { TerminalManager } from "../terminal/terminal-manager.js";
 
 const DEFAULT_WS_REPLAY_EVENT_LIMIT = 1000;
 
@@ -12,6 +13,7 @@ export interface BrowserWebSocketOptions {
   auth?: LocalAuth;
   diagnostics?: RuntimeDiagnostics;
   replayEventLimit?: number;
+  terminals?: TerminalManager;
 }
 
 export function attachBrowserWebSocket(
@@ -34,8 +36,29 @@ export function attachBrowserWebSocket(
     }
   });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
     options.diagnostics?.recordWebSocketOpen();
+    const terminalOnly = isTerminalOnlySocket(req.url);
+    if (terminalOnly) {
+      ws.send(JSON.stringify({
+        type: "terminal.hello",
+        terminalSessions: options.terminals?.list() ?? []
+      }));
+      ws.on("message", (data) => {
+        let message: any;
+        try {
+          message = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+        options.terminals?.handleMessage(ws, message);
+      });
+      ws.on("close", () => {
+        options.terminals?.handleClose(ws);
+        options.diagnostics?.recordWebSocketClose();
+      });
+      return;
+    }
     const replayEvents = events.list({ limit: replayEventLimit });
     ws.send(JSON.stringify({
       type: "hello",
@@ -43,7 +66,8 @@ export function attachBrowserWebSocket(
       replayLimited: events.stats().eventCount > replayEvents.length,
       replayEventLimit,
       tasks: listTaskSummaries(events),
-      pendingServerRequests: bridge?.getPendingServerRequests() ?? []
+      pendingServerRequests: bridge?.getPendingServerRequests() ?? [],
+      terminalSessions: options.terminals?.list() ?? []
     }));
     options.diagnostics?.recordWebSocketSend(replayEvents.length);
     const unsubscribe = events.subscribe((event) => {
@@ -53,13 +77,14 @@ export function attachBrowserWebSocket(
       }
     });
     ws.on("message", (data) => {
-      if (!bridge) return;
       let message: any;
       try {
         message = JSON.parse(data.toString());
       } catch {
         return;
       }
+      if (options.terminals?.handleMessage(ws, message)) return;
+      if (!bridge) return;
       if (message.type === "approval.approve") {
         bridge.approveServerRequest(String(message.requestId), message.result ?? {});
       }
@@ -69,11 +94,20 @@ export function attachBrowserWebSocket(
     });
     ws.on("close", () => {
       unsubscribe();
+      options.terminals?.handleClose(ws);
       options.diagnostics?.recordWebSocketClose();
     });
   });
 
   return wss;
+}
+
+function isTerminalOnlySocket(url: string | undefined): boolean {
+  try {
+    return new URL(url ?? "/ws", "http://localhost").searchParams.get("scope") === "terminal";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeOptions(input?: LocalAuth | BrowserWebSocketOptions): BrowserWebSocketOptions {

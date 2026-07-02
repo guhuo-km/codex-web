@@ -90,28 +90,40 @@ export class CodexBridge {
     return this.client.request("thread/name/set", { threadId, name });
   }
 
-  getConversationSummary(threadId: string): Promise<unknown> {
-    return this.client.request("getConversationSummary", { conversationId: threadId });
-  }
-
   startTurn(threadId: string, text: string, overrides: Record<string, unknown> = {}): Promise<unknown> {
     return this.startTurnItems(threadId, textInput(text), overrides);
   }
 
-  startTurnItems(threadId: string, input: UserInputItem[], overrides: Record<string, unknown> = {}): Promise<unknown> {
-    return this.client.request("turn/start", {
+  async startTurnItems(threadId: string, input: UserInputItem[], overrides: Record<string, unknown> = {}): Promise<unknown> {
+    const result = await this.client.request("turn/start", {
       threadId,
       input,
       ...compactObject(overrides)
     });
+    const turnId = readTurnId(result);
+    if (turnId) {
+      this.events.append({
+        type: "codex.agent/status",
+        threadId,
+        turnId,
+        payload: {
+          kind: "status",
+          phase: "model_request",
+          message: "正在请求模型",
+          threadId,
+          turnId
+        }
+      });
+    }
+    return result;
   }
 
   interruptTurn(threadId: string, turnId: string): Promise<unknown> {
     return this.client.request("turn/interrupt", { threadId, turnId });
   }
 
-  steerTurn(threadId: string, text: string, expectedTurnId: string): Promise<unknown> {
-    return this.client.request("turn/steer", { threadId, input: textInput(text), expectedTurnId });
+  steerTurn(threadId: string, text: string, expectedTurnId: string, clientUserMessageId?: string): Promise<unknown> {
+    return this.client.request("turn/steer", compactObject({ threadId, clientUserMessageId, input: textInput(text), expectedTurnId }));
   }
 
   listSkills(cwds: string[], forceReload = false): Promise<unknown> {
@@ -165,7 +177,7 @@ export class CodexBridge {
   private handleNotification(notification: JsonRpcNotification): void {
     const params = (notification.params ?? {}) as any;
     const threadId = params.threadId ?? params.thread?.id;
-    const turnId = params.turnId ?? params.turn?.id;
+    const turnId = this.resolveNotificationTurnId(threadId, params.turnId ?? params.turn?.id);
 
     this.events.append({
       type: `codex.${notification.method}`,
@@ -187,10 +199,20 @@ export class CodexBridge {
     }
   }
 
+  private resolveNotificationTurnId(threadId: string | undefined, explicitTurnId: string | undefined): string | undefined {
+    if (explicitTurnId || !threadId) return explicitTurnId;
+    const runningTurns = this.events.getRunningTurns().filter((turn) => turn.threadId === threadId);
+    return runningTurns.length === 1 ? runningTurns[0]?.turnId : undefined;
+  }
+
   private handleServerRequest(request: JsonRpcServerRequest): void {
-    this.serverRequests.set(String(request.id), request);
+    const threadId = readPath<string>(request, ["params", "threadId"]);
+    const turnId = this.resolveNotificationTurnId(threadId, readPath<string>(request, ["params", "turnId"]));
+    this.serverRequests.set(String(request.id), attachRequestTurnId(request, turnId));
     this.events.append({
       type: `codex.request.${request.method}`,
+      threadId,
+      turnId,
       payload: request
     });
   }
@@ -266,6 +288,12 @@ function readTurnErrorMessage(params: any): string | undefined {
     ?? readPath<string>(params, ["message"]);
 }
 
+function readTurnId(input: unknown): string | undefined {
+  return readPath<string>(input, ["turn", "id"])
+    ?? readPath<string>(input, ["turnId"])
+    ?? readPath<string>(input, ["id"]);
+}
+
 function readPath<T>(input: unknown, path: string[]): T | undefined {
   let current: any = input;
   for (const key of path) {
@@ -273,6 +301,17 @@ function readPath<T>(input: unknown, path: string[]): T | undefined {
     current = current[key];
   }
   return current as T | undefined;
+}
+
+function attachRequestTurnId(request: JsonRpcServerRequest, turnId: string | undefined): JsonRpcServerRequest {
+  if (!turnId) return request;
+  return {
+    ...request,
+    params: {
+      ...(request.params && typeof request.params === "object" && !Array.isArray(request.params) ? request.params : {}),
+      turnId
+    }
+  };
 }
 
 function compactObject<T extends Record<string, unknown>>(input: T): Partial<T> {

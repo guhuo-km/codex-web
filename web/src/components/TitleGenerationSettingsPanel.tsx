@@ -35,7 +35,7 @@ export function TitleGenerationSettingsPanel() {
       } catch (loadError) {
         if (cancelled) return;
         console.error("Failed to load title generation settings", loadError);
-        setError("标题生成配置加载失败");
+        setError("AI 辅助配置加载失败");
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -69,7 +69,7 @@ export function TitleGenerationSettingsPanel() {
       setError(null);
     } catch (saveError) {
       console.error("Failed to save title generation settings", saveError);
-      setError(saveError instanceof Error ? saveError.message : "标题生成配置保存失败");
+      setError(saveError instanceof Error ? saveError.message : "AI 辅助配置保存失败");
     } finally {
       setSaving(false);
     }
@@ -78,7 +78,7 @@ export function TitleGenerationSettingsPanel() {
   return (
     <div className="title-generation-settings notification-settings">
       <div className="notification-toolbar">
-        <span>{loaded ? "标题生成" : "正在加载标题生成配置..."}</span>
+        <span>{loaded ? "AI 辅助" : "正在加载 AI 辅助配置..."}</span>
         <button type="button" onClick={() => void save()} disabled={saving}>
           <Save size={14} />
           <span>{saving ? "保存中" : "保存配置"}</span>

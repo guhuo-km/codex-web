@@ -59,4 +59,37 @@ describe("TitleGenerationService", () => {
       model: "title-model"
     }));
   });
+
+  test("explains command behavior without asking for intent or risk analysis", async () => {
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({
+      choices: [
+        { message: { content: "读取 package.json 的完整文本内容。" } }
+      ]
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
+    const store = new TitleGenerationStore(dataDir);
+    await store.write({
+      enabled: true,
+      apiBaseUrl: "https://example.test/v1/",
+      apiKey: "secret-key",
+      model: "assist-model",
+      timeoutMs: 5000
+    });
+    const service = new TitleGenerationService(store, { fetchFn });
+
+    const explanation = await service.explainCommand({ command: "Get-Content -Raw package.json" });
+
+    expect(explanation).toBe("读取 package.json 的完整文本内容。");
+    const [, init] = fetchFn.mock.calls[0]!;
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("assist-model");
+    expect(body.messages[0].content).toContain("只解释真正执行的核心动作");
+    expect(body.messages[0].content).toContain("忽略外层 shell 启动器");
+    expect(body.messages[0].content).toContain("别废话");
+    expect(body.messages[0].content).toContain("不要推测 Agent 的意图");
+    expect(body.messages[0].content).toContain("不要做安全或风险结论");
+    expect(body.messages[1].content).toContain("Get-Content -Raw package.json");
+  });
 });

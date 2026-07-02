@@ -15,6 +15,7 @@ import type {
   StatusPayload,
   TaskSummary,
   ThemeRecord,
+  ThreadGoalStatus,
   ThreadSummary,
   TrashPayload,
   UploadedFile,
@@ -87,6 +88,10 @@ export const api = {
     method: "PUT",
     body: JSON.stringify(input)
   }),
+  explainCommand: (input: string | { command: string; threadId?: string; turnId?: string; toolCallId?: string }) => request<{ explanation: string }>("/api/tool-explanations/command", {
+    method: "POST",
+    body: JSON.stringify(typeof input === "string" ? { command: input } : input)
+  }),
   notificationDeliveries: (limit?: number) => request<NotificationDeliveryRecord[]>(`/api/notifications/deliveries${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`),
   testNotifications: (input?: { title?: string; message?: string }) => request<NotificationDeliveryRecord[]>("/api/notifications/test", {
     method: "POST",
@@ -115,7 +120,7 @@ export const api = {
     body: JSON.stringify(input?.length ? { input, overrides } : { text, overrides })
   }),
   interrupt: (threadId: string, turnId: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/interrupt`, { method: "POST", body: JSON.stringify({ turnId }) }),
-  steer: (threadId: string, text: string, turnId: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/steer`, { method: "POST", body: JSON.stringify({ text, turnId }) }),
+  steer: (threadId: string, text: string, turnId: string, clientUserMessageId?: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/steer`, { method: "POST", body: JSON.stringify({ text, turnId, clientUserMessageId }) }),
   rollback: (threadId: string, numTurns: number) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/rollback`, { method: "POST", body: JSON.stringify({ numTurns }) }),
   rollbackToTurn: (threadId: string, turnId: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/rollback-to-turn`, { method: "POST", body: JSON.stringify({ turnId }) }),
   compactThread: (threadId: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/compact`, { method: "POST", body: JSON.stringify({}) }),
@@ -123,7 +128,7 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ overrides })
   }),
-  setThreadGoal: (threadId: string, input: { objective?: string; status?: string; tokenBudget?: number | null }) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/goal`, {
+  setThreadGoal: (threadId: string, input: { objective?: string; status?: ThreadGoalStatus; tokenBudget?: number | null }) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/goal`, {
     method: "POST",
     body: JSON.stringify(input)
   }),
@@ -133,10 +138,6 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ name })
   }),
-  generateThreadTitle: (threadId: string) => request<unknown>(`/api/threads/${encodeURIComponent(threadId)}/title/generate`, {
-    method: "POST",
-    body: JSON.stringify({})
-  }),
   approve: (requestId: string | number, result: unknown = { decision: "accept" }) => request<unknown>(`/api/approvals/${encodeURIComponent(String(requestId))}/approve`, { method: "POST", body: JSON.stringify(result) }),
   reject: (requestId: string | number, message: string) => request<unknown>(`/api/approvals/${encodeURIComponent(String(requestId))}/reject`, { method: "POST", body: JSON.stringify({ message }) })
 };
@@ -144,4 +145,8 @@ export const api = {
 export function wsUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws`;
+}
+
+export function terminalWsUrl(): string {
+  return `${wsUrl()}?scope=terminal`;
 }

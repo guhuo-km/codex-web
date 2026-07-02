@@ -1,4 +1,4 @@
-import { Circle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plug, RefreshCw } from "lucide-react";
+import { Circle, PanelLeftClose, PanelLeftOpen, Plug, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CapabilityPayload, McpServerCapability, StatusPayload, TaskSummary } from "../types";
 
@@ -11,9 +11,6 @@ interface StatusBarProps {
   onRefreshCapabilities: () => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
-  isMobileLayout: boolean;
-  mobileJumpRailOpen: boolean;
-  onToggleMobileJumpRail: () => void;
 }
 
 export function StatusBar({
@@ -24,10 +21,7 @@ export function StatusBar({
   capabilities,
   onRefreshCapabilities,
   sidebarCollapsed,
-  onToggleSidebar,
-  isMobileLayout,
-  mobileJumpRailOpen,
-  onToggleMobileJumpRail
+  onToggleSidebar
 }: StatusBarProps) {
   const [openMenu, setOpenMenu] = useState<"mcp" | "skills" | "plugins" | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -77,11 +71,11 @@ export function StatusBar({
         <button
           className="icon-button"
           type="button"
-          onClick={isMobileLayout ? onToggleMobileJumpRail : onRefresh}
-          title={isMobileLayout ? (mobileJumpRailOpen ? "收起快捷跳转" : "显示快捷跳转") : "刷新"}
-          aria-label={isMobileLayout ? (mobileJumpRailOpen ? "收起快捷跳转" : "显示快捷跳转") : "刷新"}
+          onClick={onRefresh}
+          title="刷新"
+          aria-label="刷新"
         >
-          {isMobileLayout ? (mobileJumpRailOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />) : <RefreshCw size={16} />}
+          <RefreshCw size={16} />
         </button>
       </div>
     </header>

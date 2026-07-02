@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, Check, Clock3, Copy, FileText, Gauge, GitBranch, MessageSquare, Minus, Plus, RotateCcw, Undo2, X } from "lucide-react";
-import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { ArrowDown, ArrowUp, Check, Clock3, Copy, FileText, Gauge, GitBranch, MessageSquare, Minus, PanelRightClose, PanelRightOpen, Plus, RotateCcw, SquareTerminal, Undo2, X } from "lucide-react";
+import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -8,10 +8,12 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import hljs from "highlight.js/lib/common";
 import "katex/dist/katex.min.css";
+import "@xterm/xterm/css/xterm.css";
+import { terminalWsUrl } from "../api";
 import { formatDuration, formatTokenCount } from "../display-format";
 import { diffStatsForToolCall, fileChangeViews } from "../file-change-display";
 import { appendTurnWindow, followLatestTurnWindow, latestTurnWindow, normalizeTurnWindow, prependTurnWindow, type TurnWindow } from "../turn-window";
-import type { QueuedSteerMessage, TaskSummary, ToolGroupCollapseMode, UiMessage, UiThread, UiToolCall } from "../types";
+import type { QueuedSteerMessage, TaskSummary, ThreadGoal, ToolGroupCollapseMode, UiAgentEvent, UiMessage, UiThread, UiToolCall } from "../types";
 
 const INITIAL_VISIBLE_TURNS = 20;
 const TURN_WINDOW_BATCH_SIZE = 10;
@@ -26,14 +28,18 @@ interface ChatPaneProps {
   toolGroupCollapseMode?: ToolGroupCollapseMode;
   renderUserMessagesAsMarkdown?: boolean;
   historyCacheTurnLimit?: number;
-  queuedSteers?: QueuedSteerMessage[];
   runningTask?: TaskSummary;
-  onRemoveQueuedSteer?: (id: string) => void;
+  goal?: ThreadGoal | null;
   onRollbackMessage?: (messageId: string) => void;
   onForkMessage?: (messageId: string) => void;
+  onCreateGoal?: (objective: string) => void | Promise<void>;
+  onPauseGoal?: () => void | Promise<void>;
+  onResumeGoal?: () => void | Promise<void>;
+  onClearGoal?: () => void | Promise<void>;
   isMobileLayout?: boolean;
-  mobileJumpRailOpen?: boolean;
-  onRequestCollapseMobileJumpRail?: () => void;
+  mobileRightDrawerOpen?: boolean;
+  onToggleMobileRightDrawer?: () => void;
+  onRequestCloseMobileRightDrawer?: () => void;
 }
 
 export const isMemoizedChatPane = true;
@@ -45,14 +51,18 @@ export const ChatPane = memo(function ChatPane({
   toolGroupCollapseMode = "alwaysExpanded",
   renderUserMessagesAsMarkdown = false,
   historyCacheTurnLimit = 60,
-  queuedSteers = [],
   runningTask,
-  onRemoveQueuedSteer,
+  goal,
   onRollbackMessage,
   onForkMessage,
+  onCreateGoal,
+  onPauseGoal,
+  onResumeGoal,
+  onClearGoal,
   isMobileLayout = false,
-  mobileJumpRailOpen = false,
-  onRequestCollapseMobileJumpRail
+  mobileRightDrawerOpen = false,
+  onToggleMobileRightDrawer,
+  onRequestCloseMobileRightDrawer
 }: ChatPaneProps) {
   const showEmpty = !thread || (thread.messages.length === 0 && !isGenerating);
   const messages = useMemo(() => thread?.messages ?? [], [thread?.messages]);
@@ -141,10 +151,10 @@ export const ChatPane = memo(function ChatPane({
   }, [messages, turns.length, isGenerating, visibleTurnWindow.end, showEmpty]);
 
   useEffect(() => {
-    if (!mobileJumpRailOpen) return;
+    if (!mobileRightDrawerOpen) return;
     userScrollIntentRef.current = false;
     suppressProgrammaticScroll();
-  }, [mobileJumpRailOpen]);
+  }, [mobileRightDrawerOpen]);
 
   function loadOlderTurns() {
     const scrollElement = scrollRef.current;
@@ -170,8 +180,8 @@ export const ChatPane = memo(function ChatPane({
       previousScrollTopRef.current = scrollElement.scrollTop;
       return;
     }
-    if (mobileJumpRailOpen && userScrollIntentRef.current) {
-      onRequestCollapseMobileJumpRail?.();
+    if (isMobileLayout && mobileRightDrawerOpen && userScrollIntentRef.current) {
+      onRequestCloseMobileRightDrawer?.();
     }
     const distanceFromBottom = scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop;
     const isNearBottom = distanceFromBottom <= FOLLOW_BOTTOM_THRESHOLD;
@@ -219,7 +229,7 @@ export const ChatPane = memo(function ChatPane({
   }
 
   return (
-    <main className={`chat-pane ${mobileJumpRailOpen ? "mobile-jump-rail-open" : ""}`}>
+    <main className={`chat-pane ${mobileRightDrawerOpen ? "right-drawer-open" : ""}`}>
       <div
         className="event-list conversation-scroll"
         ref={scrollRef}
@@ -250,8 +260,6 @@ export const ChatPane = memo(function ChatPane({
                 model={model}
                 toolGroupCollapseMode={toolGroupCollapseMode}
                 renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
-                queuedSteers={queuedSteers}
-                onRemoveQueuedSteer={onRemoveQueuedSteer}
                 onRollbackMessage={onRollbackMessage}
                 onForkMessage={onForkMessage}
                 onPreviewImage={setPreviewImage}
@@ -273,8 +281,6 @@ export const ChatPane = memo(function ChatPane({
                   model={model}
                   toolGroupCollapseMode={toolGroupCollapseMode}
                   renderUserMessagesAsMarkdown={renderUserMessagesAsMarkdown}
-                  queuedSteers={queuedSteers}
-                  onRemoveQueuedSteer={onRemoveQueuedSteer}
                   onRollbackMessage={onRollbackMessage}
                   onForkMessage={onForkMessage}
                   onPreviewImage={setPreviewImage}
@@ -287,21 +293,36 @@ export const ChatPane = memo(function ChatPane({
               ) : null}
               <div ref={bottomRef} className="conversation-bottom-anchor" aria-hidden="true" />
             </div>
-            {visibleTurns.length > 1 ? (
+            {visibleTurns.length > 1 && !isMobileLayout ? (
               <QuickJump
                 ref={jumpRailRef}
                 turns={visibleTurns}
                 visibleTurnStartIndex={visibleTurnStartIndex}
                 totalTurnCount={turns.length}
                 onBeforeJump={suppressProgrammaticScroll}
-                isMobileLayout={isMobileLayout}
-                mobileJumpRailOpen={mobileJumpRailOpen}
-                onRequestCollapseMobileJumpRail={onRequestCollapseMobileJumpRail}
               />
             ) : null}
           </div>
         )}
       </div>
+      {thread ? (
+        <RightDrawer
+          turns={visibleTurns}
+          cwd={thread.cwd}
+          visibleTurnStartIndex={visibleTurnStartIndex}
+          totalTurnCount={turns.length}
+          open={mobileRightDrawerOpen}
+          onToggle={onToggleMobileRightDrawer}
+          onBeforeJump={suppressProgrammaticScroll}
+          onRequestClose={onRequestCloseMobileRightDrawer}
+          showJumpNavigation={isMobileLayout && visibleTurns.length > 1}
+          goal={goal}
+          onCreateGoal={onCreateGoal}
+          onPauseGoal={onPauseGoal}
+          onResumeGoal={onResumeGoal}
+          onClearGoal={onClearGoal}
+        />
+      ) : null}
       {previewImage ? (
         <ImagePreviewOverlay image={previewImage} onClose={() => setPreviewImage(null)} />
       ) : null}
@@ -321,8 +342,6 @@ function ChatMessage({
   model,
   toolGroupCollapseMode,
   renderUserMessagesAsMarkdown,
-  queuedSteers,
-  onRemoveQueuedSteer,
   onRollbackMessage,
   onForkMessage,
   onPreviewImage
@@ -332,8 +351,6 @@ function ChatMessage({
   model?: string;
   toolGroupCollapseMode: ToolGroupCollapseMode;
   renderUserMessagesAsMarkdown: boolean;
-  queuedSteers: QueuedSteerMessage[];
-  onRemoveQueuedSteer?: (id: string) => void;
   onRollbackMessage?: (messageId: string) => void;
   onForkMessage?: (messageId: string) => void;
   onPreviewImage: (image: { src: string; name: string }) => void;
@@ -350,7 +367,7 @@ function ChatMessage({
   const isUser = message.role === "user";
   const hasText = message.text.trim().length > 0;
   const hasParts = Boolean(message.assistantParts?.length);
-  const steerItems = isUser ? [] : mergeSteerMessages(message.steerMessages, message.isStreaming ? queuedSteers : []);
+  const steerItems = isUser ? [] : mergeSteerMessages(message.steerMessages, []);
   const hasSteerParts = Boolean(message.assistantParts?.some((part) => part.type === "steer"));
 
   return (
@@ -373,10 +390,10 @@ function ChatMessage({
           ) : null}
         </div>
       </div>
-      {message.isStreaming && !isUser ? (
+      {(message.isStreaming || message.statusText === "已结束") && !isUser ? (
         <>
           <RunningTurnBar message={message} />
-          {!hasSteerParts ? <QueuedSteerStack items={steerItems} onRemove={onRemoveQueuedSteer} /> : null}
+          {!hasSteerParts ? <QueuedSteerStack items={steerItems} /> : null}
         </>
       ) : (hasText || hasParts || message.images?.length || message.attachments?.length || isLast) ? (
         <>
@@ -386,7 +403,6 @@ function ChatMessage({
             onRollback={isUser ? onRollbackMessage : undefined}
             onFork={!isUser ? onForkMessage : undefined}
           />
-          {!isUser && message.statusText ? <div className={`message-status-line ${message.statusTone ?? "muted"}`}>{message.statusText}</div> : null}
           {!isUser ? <MessageStats message={message} /> : null}
         </>
       ) : null}
@@ -588,6 +604,7 @@ function AssistantParts({ parts, toolGroupCollapseMode, isStreaming }: { parts: 
         if (group.kind === "text") return <MarkdownText key={group.part.id} text={group.part.text} />;
         if (group.kind === "reasoning") return <ReasoningBlock key={group.part.id} text={group.part.text} summary={group.part.summary} />;
         if (group.kind === "steer") return <SteerInline key={group.part.id} item={group.part} />;
+        if (group.kind === "agentEvent") return <AgentEventBlock key={group.part.id} event={group.part.event} />;
         if (group.parts.length === 1) {
           const part = group.parts[0]!;
           return (
@@ -635,6 +652,7 @@ function ToolCallCard({ toolCall, open, onToggle }: { toolCall: UiToolCall; open
       <button className="tool-call-summary" type="button" onClick={onToggle}>
         <span className="tool-call-icon" aria-hidden="true" style={{ "--tool-icon": `url("${toolIcon(toolCall.type)}")` } as CSSProperties} />
         <span className="tool-call-main">
+          {toolCall.commandExplanation ? <span className="tool-call-explanation">{toolCall.commandExplanation}</span> : null}
           <span className="tool-call-title">{toolTitle(toolCall)}</span>
           <span className="tool-call-subtitle">
             {fileChanges.length > 1 ? (
@@ -697,6 +715,7 @@ type AssistantPartGroup =
   | { kind: "text"; part: Extract<AssistantPart, { type: "text" }> }
   | { kind: "reasoning"; part: Extract<AssistantPart, { type: "reasoning" }> }
   | { kind: "steer"; part: Extract<AssistantPart, { type: "steer" }> }
+  | { kind: "agentEvent"; part: Extract<AssistantPart, { type: "agentEvent" }> }
   | { kind: "tools"; id: string; parts: Array<Extract<AssistantPart, { type: "tool" }>> };
 
 function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): AssistantPartGroup[] {
@@ -722,6 +741,9 @@ function groupAssistantParts(parts: NonNullable<UiMessage["assistantParts"]>): A
     } else if (part.type === "steer") {
       flushTools();
       groups.push({ kind: "steer", part });
+    } else if (part.type === "agentEvent") {
+      flushTools();
+      groups.push({ kind: "agentEvent", part });
     } else {
       flushTools();
       groups.push({ kind: "text", part });
@@ -1118,6 +1140,34 @@ function ReasoningBlock({ text, summary = true }: { text: string; summary?: bool
   );
 }
 
+function AgentEventBlock({ event }: { event: UiAgentEvent }) {
+  const details = event.details === undefined ? "" : formatJsonValue(event.details);
+  const summaryContent = (
+    <>
+      <div className="agent-event-summary-main">
+        <div className="agent-event-summary-line">
+          <span className="agent-event-title">{event.title}</span>
+          {event.createdAt ? <time>{formatTimestamp(event.createdAt)}</time> : null}
+        </div>
+        {event.message ? <div className="agent-event-message">{event.message}</div> : null}
+      </div>
+      {details ? <span className="agent-event-chevron" aria-hidden="true">›</span> : null}
+    </>
+  );
+  return (
+    <section className={`agent-event-block ${event.tone}`}>
+      {details ? (
+        <details className="agent-event-details">
+          <summary className="agent-event-summary">{summaryContent}</summary>
+          <pre>{details}</pre>
+        </details>
+      ) : (
+        <div className="agent-event-summary">{summaryContent}</div>
+      )}
+    </section>
+  );
+}
+
 function SteerInline({ item }: { item: Extract<AssistantPart, { type: "steer" }> }) {
   return (
     <div className={`assistant-steer-inline ${item.status}`}>
@@ -1176,7 +1226,7 @@ function QueuedSteerStack({ items, onRemove }: { items: QueuedSteerMessage[]; on
         <div className={`steer-queue-item ${item.status}`} key={item.id}>
           <span>{item.text}</span>
           <small>{steerStatusLabel(item.status)}</small>
-          {item.status !== "sent" ? (
+          {item.status === "queued" || item.status === "failed" ? (
             <button type="button" onClick={() => onRemove?.(item.id)} aria-label="移除引导消息">
               ×
             </button>
@@ -1199,6 +1249,7 @@ function mergeSteerMessages(primary: QueuedSteerMessage[] | undefined, secondary
 
 function steerStatusLabel(status: QueuedSteerMessage["status"]): string {
   if (status === "sent") return "已追加";
+  if (status === "submitted") return "已提交，等待追加";
   if (status === "failed") return "追加失败";
   return "待发送";
 }
@@ -1215,7 +1266,7 @@ function RunningTurnBar({ message }: { message: UiMessage }) {
   return (
     <div className="turn-runtime running">
       <span className="turn-runtime-line" />
-      <span>{message.synthetic === "manualCompact" ? "正在压缩上下文" : "Codex 工作中"} · {formatDuration(elapsedMs)}</span>
+      <span>{message.statusText ?? (message.synthetic === "manualCompact" ? "正在压缩上下文" : "Codex 工作中")} · {formatDuration(elapsedMs)}</span>
     </div>
   );
 }
@@ -1267,27 +1318,13 @@ const QuickJump = forwardRef<QuickJumpHandle, {
   visibleTurnStartIndex: number;
   totalTurnCount: number;
   onBeforeJump: () => void;
-  isMobileLayout: boolean;
-  mobileJumpRailOpen: boolean;
-  onRequestCollapseMobileJumpRail?: () => void;
 }>(function QuickJump({
   turns,
   visibleTurnStartIndex,
   totalTurnCount,
-  onBeforeJump,
-  isMobileLayout,
-  mobileJumpRailOpen,
-  onRequestCollapseMobileJumpRail
+  onBeforeJump
 }, ref) {
-  const allItems = useMemo(() => turns.map((turn, index) => {
-    const userMessage = turn.messages.find((message) => message.role === "user") ?? turn.messages[0];
-    return userMessage ? {
-      id: userMessage.id,
-      role: userMessage.role,
-      globalIndex: visibleTurnStartIndex + index + 1,
-      preview: previewText(userMessage)
-    } : null;
-  }).filter((item): item is { id: string; role: UiMessage["role"]; globalIndex: number; preview: string } => Boolean(item)), [turns, visibleTurnStartIndex]);
+  const allItems = useMemo(() => buildJumpItems(turns, visibleTurnStartIndex), [turns, visibleTurnStartIndex]);
   const items = useMemo(() => compressJumpItems(allItems, MAX_JUMP_ITEMS), [allItems]);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const activeIndex = activeMessageId ? allItems.find((item) => item.id === activeMessageId)?.globalIndex ?? 0 : 0;
@@ -1353,13 +1390,12 @@ const QuickJump = forwardRef<QuickJumpHandle, {
     const anchor = document.getElementById(`message-${messageId}`);
     if (!anchor) return;
     onBeforeJump();
-    onRequestCollapseMobileJumpRail?.();
     setActiveMessageId(messageId);
     anchor.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   return (
-    <nav className={`conversation-jump-rail ${isMobileLayout ? "mobile" : ""} ${mobileJumpRailOpen ? "open" : "closed"}`} aria-label="消息快速跳转">
+    <nav className="conversation-jump-rail" aria-label="消息快速跳转">
       <div className="conversation-jump-items">
         {items.map((item, index) => {
           const originalIndex = item.globalIndex;
@@ -1390,6 +1426,549 @@ const QuickJump = forwardRef<QuickJumpHandle, {
     </nav>
   );
 });
+
+function RightDrawer({
+  turns,
+  cwd,
+  visibleTurnStartIndex,
+  totalTurnCount,
+  open,
+  onToggle,
+  onBeforeJump,
+  onRequestClose,
+  showJumpNavigation,
+  goal,
+  onCreateGoal,
+  onPauseGoal,
+  onResumeGoal,
+  onClearGoal
+}: {
+  turns: MessageTurn[];
+  cwd?: string;
+  visibleTurnStartIndex: number;
+  totalTurnCount: number;
+  open: boolean;
+  onToggle?: () => void;
+  onBeforeJump: () => void;
+  onRequestClose?: () => void;
+  showJumpNavigation: boolean;
+  goal?: ThreadGoal | null;
+  onCreateGoal?: (objective: string) => void | Promise<void>;
+  onPauseGoal?: () => void | Promise<void>;
+  onResumeGoal?: () => void | Promise<void>;
+  onClearGoal?: () => void | Promise<void>;
+}) {
+  const [activeTab, setActiveTab] = useState<"goal" | "terminal">("goal");
+  return (
+    <>
+      <button
+        className="right-drawer-toggle"
+        type="button"
+        onClick={onToggle}
+        title={open ? "收起右侧栏" : "展开右侧栏"}
+        aria-label={open ? "收起右侧栏" : "展开右侧栏"}
+        aria-expanded={open}
+      >
+        {open ? <PanelRightClose size={17} /> : <PanelRightOpen size={17} />}
+      </button>
+      {open ? (
+        <aside className={showJumpNavigation ? "right-drawer with-jump" : "right-drawer"} aria-label="右侧栏">
+          <div className="right-drawer-body">
+            <div className="right-drawer-tabs" role="tablist" aria-label="右侧栏视图">
+              <button type="button" role="tab" aria-selected={activeTab === "goal"} className={activeTab === "goal" ? "active" : ""} onClick={() => setActiveTab("goal")}>目标</button>
+              <button type="button" role="tab" aria-selected={activeTab === "terminal"} className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>
+                <SquareTerminal size={14} />
+                终端
+              </button>
+            </div>
+            {activeTab === "goal" ? (
+              <GoalPanel
+                goal={goal}
+                onCreateGoal={onCreateGoal}
+                onPauseGoal={onPauseGoal}
+                onResumeGoal={onResumeGoal}
+                onClearGoal={onClearGoal}
+              />
+            ) : (
+              <TerminalPanel cwd={cwd} />
+            )}
+          </div>
+          {showJumpNavigation ? (
+            <div className="right-drawer-jump-host">
+              <QuickJump
+                turns={turns}
+                visibleTurnStartIndex={visibleTurnStartIndex}
+                totalTurnCount={totalTurnCount}
+                onBeforeJump={() => {
+                  onBeforeJump();
+                  onRequestClose?.();
+                }}
+              />
+            </div>
+          ) : null}
+        </aside>
+      ) : null}
+    </>
+  );
+}
+
+function GoalPanel({
+  goal,
+  onCreateGoal,
+  onPauseGoal,
+  onResumeGoal,
+  onClearGoal
+}: {
+  goal?: ThreadGoal | null;
+  onCreateGoal?: (objective: string) => void | Promise<void>;
+  onPauseGoal?: () => void | Promise<void>;
+  onResumeGoal?: () => void | Promise<void>;
+  onClearGoal?: () => void | Promise<void>;
+}) {
+  const [objective, setObjective] = useState("");
+  const [busy, setBusy] = useState(false);
+  const status = goal ? goalStatusView(goal.status) : null;
+
+  async function run(action: (() => void | Promise<void>) | undefined) {
+    if (!action || busy) return;
+    setBusy(true);
+    try {
+      await action();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = objective.trim();
+    if (!trimmed || !onCreateGoal || busy) return;
+    setBusy(true);
+    try {
+      await onCreateGoal(trimmed);
+      setObjective("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="right-drawer-goal" aria-label="目标">
+      <div className="right-drawer-goal-heading">
+        <span>目标</span>
+        {status ? <strong className={status.tone}>{status.label}</strong> : null}
+      </div>
+      {goal ? (
+        <>
+          <p className="right-drawer-goal-objective">{goal.objective}</p>
+          <div className="right-drawer-goal-meta">
+            <span>{formatTokenCount(goal.tokensUsed)} tokens</span>
+            <span>{formatDuration(goal.timeUsedSeconds * 1000)}</span>
+            {goal.tokenBudget ? <span>预算 {formatTokenCount(goal.tokenBudget)}</span> : null}
+          </div>
+          <div className="right-drawer-goal-actions">
+            {goal.status === "active" ? (
+              <button type="button" disabled={busy || !onPauseGoal} onClick={() => void run(onPauseGoal)}>暂停</button>
+            ) : goal.status === "paused" || goal.status === "blocked" ? (
+              <button type="button" disabled={busy || !onResumeGoal} onClick={() => void run(onResumeGoal)}>继续</button>
+            ) : null}
+            <button type="button" disabled={busy || !onClearGoal} onClick={() => void run(onClearGoal)}>清除</button>
+          </div>
+        </>
+      ) : (
+        <form className="right-drawer-goal-form" onSubmit={(event) => void submitGoal(event)}>
+          <textarea
+            value={objective}
+            onChange={(event) => setObjective(event.target.value)}
+            placeholder="输入目标..."
+            rows={4}
+          />
+          <button type="submit" disabled={busy || !objective.trim() || !onCreateGoal}>开始目标</button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+interface TerminalSessionSummary {
+  id: string;
+  cwd: string;
+  name: string;
+  shell: string;
+  createdAt: number;
+  updatedAt: number;
+  status: "running" | "exited";
+  exitCode?: number;
+}
+
+function TerminalPanel({ cwd }: { cwd?: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<import("@xterm/xterm").Terminal | null>(null);
+  const fitAddonRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const touchScrollYRef = useRef<number | null>(null);
+  const touchScrollRemainderRef = useRef(0);
+  const terminalOutputBuffersRef = useRef<Record<string, string>>({});
+  const terminalOutputFrameRef = useRef<number | null>(null);
+  const previousTerminalInputRef = useRef<{ input: string; at: number } | null>(null);
+  const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const projectSessions = useMemo(() => sessions.filter((session) => sameTerminalPath(session.cwd, cwd)), [sessions, cwd]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    let disposed = false;
+    let resizeObserver: ResizeObserver | undefined;
+    let cleanupTouchScroll: (() => void) | undefined;
+    void Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit")
+    ]).then(([xterm, fit]) => {
+      if (disposed || !containerRef.current) return;
+      const container = containerRef.current;
+      const terminal = new xterm.Terminal({
+        cursorBlink: false,
+        convertEol: true,
+        fontFamily: "Consolas, 'Cascadia Mono', 'SFMono-Regular', monospace",
+        fontSize: 12,
+        scrollback: 600,
+        smoothScrollDuration: 0,
+        theme: {
+          background: "#101318",
+          foreground: "#e8edf2",
+          cursor: "#8fb7ff",
+          selectionBackground: "#2d5aa7"
+        }
+      });
+      const fitAddon = new fit.FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(container);
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+      fitAddon.fit();
+      terminal.onData((data) => {
+        const sessionId = activeSessionIdRef.current;
+        const ws = wsRef.current;
+        if (!sessionId || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const now = performance.now();
+        if (shouldDropOverlappingTerminalInput(previousTerminalInputRef.current, data, now)) return;
+        previousTerminalInputRef.current = { input: data, at: now };
+        ws.send(JSON.stringify({ type: "terminal.input", sessionId, input: data }));
+      });
+      resizeObserver = new ResizeObserver(() => {
+        fitAddon.fit();
+        sendTerminalResize();
+      });
+      resizeObserver.observe(container);
+      cleanupTouchScroll = bindTerminalTouchScroll(container, terminal, touchScrollYRef, touchScrollRemainderRef);
+      sendTerminalResize();
+    });
+    return () => {
+      disposed = true;
+      if (terminalOutputFrameRef.current !== null) window.cancelAnimationFrame(terminalOutputFrameRef.current);
+      terminalOutputFrameRef.current = null;
+      terminalOutputBuffersRef.current = {};
+      cleanupTouchScroll?.();
+      resizeObserver?.disconnect();
+      terminalRef.current?.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ws = new WebSocket(terminalWsUrl());
+    wsRef.current = ws;
+    ws.addEventListener("open", () => {
+      setConnected(true);
+      setError(null);
+      ws.send(JSON.stringify({ type: "terminal.list" }));
+    });
+    ws.addEventListener("close", () => {
+      setConnected(false);
+      if (wsRef.current === ws) wsRef.current = null;
+    });
+    ws.addEventListener("error", () => {
+      setConnected(false);
+      setError("终端连接失败");
+    });
+    ws.addEventListener("message", (event) => {
+      const message = safeJson(event.data);
+      if (!message || typeof message !== "object") return;
+      handleTerminalMessage(message as Record<string, unknown>);
+    });
+    return () => {
+      ws.close();
+      if (wsRef.current === ws) wsRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeSessionId || !connected) return;
+    terminalRef.current?.reset();
+    wsRef.current?.send(JSON.stringify({ type: "terminal.attach", sessionId: activeSessionId }));
+    sendTerminalResize();
+  }, [activeSessionId, connected]);
+
+  function handleTerminalMessage(message: Record<string, unknown>) {
+    const type = message.type;
+    if (type === "hello" || type === "terminal.hello" || type === "terminal.sessions") {
+      const nextSessions = normalizeTerminalSessions(message.terminalSessions ?? message.sessions);
+      setSessions(nextSessions);
+      setActiveSessionId((current) => current && nextSessions.some((session) => session.id === current && sameTerminalPath(session.cwd, cwd))
+        ? current
+        : nextSessions.find((session) => sameTerminalPath(session.cwd, cwd))?.id ?? null);
+      return;
+    }
+    if (type === "terminal.created" || type === "terminal.attached" || type === "terminal.closed") {
+      const nextSessions = normalizeTerminalSessions(message.sessions);
+      setSessions(nextSessions);
+      if (type === "terminal.created") {
+        const created = normalizeTerminalSession(message.session);
+        if (created) setActiveSessionId(created.id);
+      } else {
+        setActiveSessionId((current) => current && nextSessions.some((session) => session.id === current && sameTerminalPath(session.cwd, cwd))
+          ? current
+          : nextSessions.find((session) => sameTerminalPath(session.cwd, cwd))?.id ?? null);
+      }
+      return;
+    }
+    if (type === "terminal.snapshot") {
+      if (message.sessionId !== activeSessionIdRef.current) return;
+      clearQueuedTerminalOutput();
+      terminalRef.current?.reset();
+      terminalRef.current?.write(String(message.output ?? ""));
+      return;
+    }
+    if (type === "terminal.output") {
+      if (message.sessionId !== activeSessionIdRef.current) return;
+      queueTerminalOutput(String(message.sessionId), String(message.data ?? ""));
+      return;
+    }
+    if (type === "terminal.exit") {
+      const sessionId = String(message.sessionId ?? "");
+      setSessions((current) => current.map((session) => session.id === sessionId ? { ...session, status: "exited", exitCode: Number(message.exitCode ?? 0) } : session));
+      return;
+    }
+    if (type === "terminal.error") {
+      setError(String(message.message ?? "终端错误"));
+    }
+  }
+
+  function createTerminal() {
+    const ws = wsRef.current;
+    if (!cwd || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: "terminal.create",
+      cwd,
+      cols: terminalRef.current?.cols ?? 80,
+      rows: terminalRef.current?.rows ?? 24
+    }));
+  }
+
+  function closeTerminal(sessionId: string) {
+    wsRef.current?.send(JSON.stringify({ type: "terminal.close", sessionId }));
+  }
+
+  function sendTerminalResize() {
+    const sessionId = activeSessionIdRef.current;
+    const terminal = terminalRef.current;
+    const ws = wsRef.current;
+    if (!sessionId || !terminal || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "terminal.resize", sessionId, cols: terminal.cols, rows: terminal.rows }));
+  }
+
+  function queueTerminalOutput(sessionId: string, data: string) {
+    terminalOutputBuffersRef.current[sessionId] = `${terminalOutputBuffersRef.current[sessionId] ?? ""}${data}`;
+    if (terminalOutputFrameRef.current !== null) return;
+    terminalOutputFrameRef.current = window.requestAnimationFrame(() => {
+      terminalOutputFrameRef.current = null;
+      const activeSessionId = activeSessionIdRef.current;
+      if (!activeSessionId || !terminalRef.current) {
+        terminalOutputBuffersRef.current = {};
+        return;
+      }
+      const output = terminalOutputBuffersRef.current[activeSessionId];
+      terminalOutputBuffersRef.current = {};
+      if (output) terminalRef.current.write(output);
+    });
+  }
+
+  function clearQueuedTerminalOutput() {
+    if (terminalOutputFrameRef.current !== null) window.cancelAnimationFrame(terminalOutputFrameRef.current);
+    terminalOutputFrameRef.current = null;
+    terminalOutputBuffersRef.current = {};
+  }
+
+  return (
+    <section className="right-drawer-terminal" aria-label="终端">
+      <div className="terminal-toolbar">
+        <div className="terminal-tabs" role="tablist" aria-label="终端会话">
+          {projectSessions.map((session, index) => (
+            <div key={session.id} className={session.id === activeSessionId ? "terminal-tab active" : "terminal-tab"}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={session.id === activeSessionId}
+                className="terminal-tab-select"
+                onClick={() => setActiveSessionId(session.id)}
+                title={`${session.name} · ${session.cwd}`}
+              >
+                <span>{index + 1}</span>
+                {session.status === "exited" ? <em>已退出</em> : null}
+              </button>
+              <button
+                type="button"
+                className="terminal-tab-close"
+                aria-label={`关闭终端 ${index + 1}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeTerminal(session.id);
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="terminal-new-button" type="button" onClick={createTerminal} disabled={!connected || !cwd} title="新建终端">
+          <Plus size={14} />
+        </button>
+      </div>
+      <div className="terminal-shell">
+        <div className="terminal-surface" ref={containerRef} />
+        {projectSessions.length === 0 ? (
+          <button className="terminal-empty" type="button" onClick={createTerminal} disabled={!connected || !cwd}>
+            <SquareTerminal size={18} />
+            <span>{connected ? "新建终端" : "正在连接终端..."}</span>
+          </button>
+        ) : null}
+      </div>
+      {error ? <p className="terminal-error">{error}</p> : null}
+      <p className="terminal-cwd">{cwd ?? "未选择项目路径"}</p>
+    </section>
+  );
+}
+
+function normalizeTerminalSessions(value: unknown): TerminalSessionSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeTerminalSession).filter((session): session is TerminalSessionSummary => Boolean(session));
+}
+
+function normalizeTerminalSession(value: unknown): TerminalSessionSummary | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || typeof record.cwd !== "string" || typeof record.name !== "string") return null;
+  return {
+    id: record.id,
+    cwd: record.cwd,
+    name: record.name,
+    shell: typeof record.shell === "string" ? record.shell : "",
+    createdAt: typeof record.createdAt === "number" ? record.createdAt : Date.now(),
+    updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : Date.now(),
+    status: record.status === "exited" ? "exited" : "running",
+    exitCode: typeof record.exitCode === "number" ? record.exitCode : undefined
+  };
+}
+
+function safeJson(input: unknown): any | null {
+  if (typeof input !== "string") return null;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return null;
+  }
+}
+
+function sameTerminalPath(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false;
+  return left.replace(/\\/g, "/").toLowerCase() === right.replace(/\\/g, "/").toLowerCase();
+}
+
+function bindTerminalTouchScroll(
+  container: HTMLDivElement,
+  terminal: import("@xterm/xterm").Terminal,
+  lastYRef: { current: number | null },
+  remainderRef: { current: number }
+): () => void {
+  const lineHeightPx = 16;
+  const onTouchStart = (event: TouchEvent) => {
+    if (event.touches.length !== 1) return;
+    lastYRef.current = event.touches[0]?.clientY ?? null;
+    remainderRef.current = 0;
+  };
+  const onTouchMove = (event: TouchEvent) => {
+    if (event.touches.length !== 1 || lastYRef.current === null) return;
+    const currentY = event.touches[0]?.clientY ?? lastYRef.current;
+    const deltaY = lastYRef.current - currentY;
+    lastYRef.current = currentY;
+    remainderRef.current += deltaY / lineHeightPx;
+    const lines = Math.trunc(remainderRef.current);
+    if (lines !== 0) {
+      terminal.scrollLines(lines);
+      remainderRef.current -= lines;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const onTouchEnd = () => {
+    lastYRef.current = null;
+    remainderRef.current = 0;
+  };
+  container.addEventListener("touchstart", onTouchStart, { passive: true });
+  container.addEventListener("touchmove", onTouchMove, { passive: false });
+  container.addEventListener("touchend", onTouchEnd);
+  container.addEventListener("touchcancel", onTouchEnd);
+  return () => {
+    container.removeEventListener("touchstart", onTouchStart);
+    container.removeEventListener("touchmove", onTouchMove);
+    container.removeEventListener("touchend", onTouchEnd);
+    container.removeEventListener("touchcancel", onTouchEnd);
+  };
+}
+
+export function shouldDropOverlappingTerminalInput(
+  previous: { input: string; at: number } | null,
+  input: string,
+  at: number
+): boolean {
+  if (!previous) return false;
+  if (previous.input.length < 2 || previous.input.length > 4) return false;
+  if (input.length !== 1) return false;
+  if (!previous.input.endsWith(input)) return false;
+  return at - previous.at <= 8;
+}
+
+function goalStatusView(status: ThreadGoal["status"]): { tone: "active" | "paused" | "blocked"; label: string } {
+  if (status === "active") return { tone: "active", label: "目标进行中" };
+  if (status === "paused") return { tone: "paused", label: "目标已暂停" };
+  return { tone: "blocked", label: "目标有阻碍" };
+}
+
+interface JumpItem {
+  id: string;
+  role: UiMessage["role"];
+  globalIndex: number;
+  preview: string;
+}
+
+function buildJumpItems(turns: MessageTurn[], visibleTurnStartIndex: number): JumpItem[] {
+  return turns.map((turn, index) => {
+    const userMessage = turn.messages.find((message) => message.role === "user") ?? turn.messages[0];
+    return userMessage ? {
+      id: userMessage.id,
+      role: userMessage.role,
+      globalIndex: visibleTurnStartIndex + index + 1,
+      preview: previewText(userMessage)
+    } : null;
+  }).filter((item): item is JumpItem => Boolean(item));
+}
 
 interface MessageTurn {
   id: string;

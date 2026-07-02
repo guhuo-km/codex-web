@@ -13,10 +13,11 @@ describe("title generation routes", () => {
   let baseUrl = "";
   let dataDir = "";
   let bridge: any;
+  let fetchFn: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "codex-title-generation-routes-"));
-    const fetchFn = vi.fn(async () => new Response(JSON.stringify({
+    fetchFn = vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { content: "AI 标题生成设置" } }]
     }), {
       status: 200,
@@ -35,6 +36,7 @@ describe("title generation routes", () => {
               id: "turn-1",
               items: [
                 { type: "userMessage", text: "我想配置自定义 OpenAI 标题生成" },
+                { type: "commandExecution", id: "tool-1", command: "Get-Content -Raw package.json", status: "completed" },
                 { type: "agentMessage", text: "可以新增设置页和请求逻辑。" }
               ]
             }
@@ -49,7 +51,6 @@ describe("title generation routes", () => {
       getThreadGoal: async () => ({}),
       clearThreadGoal: async () => ({}),
       setThreadName: vi.fn(async () => ({})),
-      getConversationSummary: async () => ({}),
       startTurn: async () => ({}),
       startTurnItems: async () => ({}),
       interruptTurn: async () => ({}),
@@ -103,7 +104,7 @@ describe("title generation routes", () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
-  test("updates settings without exposing API key and uses them to rename a thread", async () => {
+  test("updates settings without exposing API key", async () => {
     await requestJson(`${baseUrl}/api/title-generation`, {
       method: "PUT",
       body: {
@@ -125,10 +126,73 @@ describe("title generation routes", () => {
     });
     expect(JSON.stringify(settings)).not.toContain("secret-key");
 
-    const result = await requestJson(`${baseUrl}/api/threads/thread-1/title/generate`, { method: "POST", body: {} });
-    expect(result).toEqual({ title: "AI 标题生成设置" });
-    expect(bridge.readThread).toHaveBeenCalledWith("thread-1", true);
-    expect(bridge.setThreadName).toHaveBeenCalledWith("thread-1", "AI 标题生成设置");
+    expect(bridge.readThread).not.toHaveBeenCalled();
+    expect(bridge.setThreadName).not.toHaveBeenCalled();
+  });
+
+  test("does not expose thread title regeneration route", async () => {
+    const response = await fetch(`${baseUrl}/api/threads/thread-1/title/generate`, { method: "POST" });
+
+    expect(response.status).toBe(404);
+  });
+
+  test("explains command behavior through the AI assist route", async () => {
+    await requestJson(`${baseUrl}/api/title-generation`, {
+      method: "PUT",
+      body: {
+        enabled: true,
+        apiBaseUrl: "https://example.test/v1",
+        apiKey: "secret-key",
+        model: "assist-model",
+        timeoutMs: 5000
+      }
+    });
+
+    const result = await requestJson(`${baseUrl}/api/tool-explanations/command`, {
+      method: "POST",
+      body: { command: "Get-Content -Raw package.json" }
+    });
+
+    expect(result).toEqual({ explanation: "AI 标题生成设置" });
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+  });
+
+  test("persists command explanations and restores them with thread history", async () => {
+    await requestJson(`${baseUrl}/api/title-generation`, {
+      method: "PUT",
+      body: {
+        enabled: true,
+        apiBaseUrl: "https://example.test/v1",
+        apiKey: "secret-key",
+        model: "assist-model",
+        timeoutMs: 5000
+      }
+    });
+
+    const first = await requestJson(`${baseUrl}/api/tool-explanations/command`, {
+      method: "POST",
+      body: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        command: "Get-Content -Raw package.json"
+      }
+    });
+    const second = await requestJson(`${baseUrl}/api/tool-explanations/command`, {
+      method: "POST",
+      body: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        toolCallId: "tool-1",
+        command: "Get-Content -Raw package.json"
+      }
+    });
+    const thread = await requestJson(`${baseUrl}/api/threads/thread-1`);
+
+    expect(first).toEqual({ explanation: "AI 标题生成设置" });
+    expect(second).toEqual({ explanation: "AI 标题生成设置" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(thread)).toContain('"commandExplanation":"AI 标题生成设置"');
   });
 });
 

@@ -25,7 +25,6 @@ interface SidebarProps {
   onDeleteProject: (cwd: string) => void;
   onRestoreProject: (cwd: string) => Promise<void>;
   onPinThread: (cwd: string, threadId: string) => void;
-  onRegenerateThreadTitle: (cwd: string, threadId: string) => void;
   onRenameThread: (cwd: string, threadId: string, title: string) => void;
   onExportThread: (cwd: string, threadId: string) => void;
   onDeleteThread: (cwd: string, threadId: string) => void;
@@ -67,7 +66,7 @@ interface SidebarProps {
   onLogout: () => void | Promise<void>;
 }
 
-export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, threadActivityIndicators, onSelectWorkspace, onSelectThread, onAddWorkspace, onQuickCreateWorkspace, onNewThread, onRenameProject, onPinProject, onMoveProject, onDeleteProject, onRestoreProject, onPinThread, onRegenerateThreadTitle, onRenameThread, onExportThread, onDeleteThread, onRestoreThread, onMoveThread, colorMode, themes, activeThemeId, onToggleColorMode, onSelectTheme, onCreateTheme, onDeleteTheme, toolGroupCollapseMode, onToolGroupCollapseModeChange, approvalDetailsCollapsedByDefault, onToggleApprovalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, onToggleRenderUserMessagesAsMarkdown, desktopSendBehavior, mobileSendBehavior, activeSendBehaviorDevice, onDesktopSendBehaviorChange, onMobileSendBehaviorChange, historyCacheTurnLimit, onHistoryCacheTurnLimitChange, sidebarWidth, onSidebarWidthChange, defaultModel, defaultWorkMode, defaultEffort, onDefaultModelChange, onDefaultWorkModeChange, onDefaultEffortChange, authEnabled, authenticated, savedPasswordEnabled, onAuthSettingsChange, onClearSavedPassword, onLogout }: SidebarProps) {
+export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, threadActivityIndicators, onSelectWorkspace, onSelectThread, onAddWorkspace, onQuickCreateWorkspace, onNewThread, onRenameProject, onPinProject, onMoveProject, onDeleteProject, onRestoreProject, onPinThread, onRenameThread, onExportThread, onDeleteThread, onRestoreThread, onMoveThread, colorMode, themes, activeThemeId, onToggleColorMode, onSelectTheme, onCreateTheme, onDeleteTheme, toolGroupCollapseMode, onToolGroupCollapseModeChange, approvalDetailsCollapsedByDefault, onToggleApprovalDetailsCollapsedByDefault, renderUserMessagesAsMarkdown, onToggleRenderUserMessagesAsMarkdown, desktopSendBehavior, mobileSendBehavior, activeSendBehaviorDevice, onDesktopSendBehaviorChange, onMobileSendBehaviorChange, historyCacheTurnLimit, onHistoryCacheTurnLimitChange, sidebarWidth, onSidebarWidthChange, defaultModel, defaultWorkMode, defaultEffort, onDefaultModelChange, onDefaultWorkModeChange, onDefaultEffortChange, authEnabled, authenticated, savedPasswordEnabled, onAuthSettingsChange, onClearSavedPassword, onLogout }: SidebarProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
@@ -386,7 +385,6 @@ export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, thre
                               {openThreadMenuId === thread.id ? (
                                 <div className="thread-menu">
                                   <button type="button" onClick={() => { setOpenThreadMenuId(null); onPinThread(workspace.cwd, thread.id); }}>{thread.pinned ? "取消置顶" : "置顶"}</button>
-                                  <button type="button" onClick={() => { setOpenThreadMenuId(null); onRegenerateThreadTitle(workspace.cwd, thread.id); }}>重新生成标题</button>
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -485,7 +483,7 @@ export function Sidebar({ workspaces, loadError, activeCwd, activeThreadId, thre
                 <button type="button" className={settingsSection === "security" ? "active" : ""} onClick={() => setSettingsSection("security")}>安全</button>
                 <button type="button" className={settingsSection === "approvals" ? "active" : ""} onClick={() => setSettingsSection("approvals")}>审批</button>
                 <button type="button" className={settingsSection === "defaults" ? "active" : ""} onClick={() => setSettingsSection("defaults")}>默认值</button>
-                <button type="button" className={settingsSection === "titleGeneration" ? "active" : ""} onClick={() => setSettingsSection("titleGeneration")}>标题</button>
+                <button type="button" className={settingsSection === "titleGeneration" ? "active" : ""} onClick={() => setSettingsSection("titleGeneration")}>AI辅助</button>
                 <button type="button" className={settingsSection === "notifications" ? "active" : ""} onClick={() => setSettingsSection("notifications")}>通知</button>
                 <button type="button" className={settingsSection === "appearance" ? "active" : ""} onClick={() => setSettingsSection("appearance")}>界面</button>
                 <button type="button" className={settingsSection === "trash" ? "active" : ""} onClick={() => setSettingsSection("trash")}>回收站</button>

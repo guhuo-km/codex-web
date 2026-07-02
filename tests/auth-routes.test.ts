@@ -100,7 +100,6 @@ async function startServer(): Promise<{ baseUrl: string; port: number; dataDir: 
     getThreadGoal: async () => ({}),
     clearThreadGoal: async () => ({}),
     setThreadName: async () => ({}),
-    getConversationSummary: async () => ({}),
     startTurn: async () => ({}),
     startTurnItems: async () => ({}),
     interruptTurn: async () => ({}),

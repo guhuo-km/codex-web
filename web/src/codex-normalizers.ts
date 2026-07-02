@@ -112,7 +112,8 @@ export function normalizeToolCallFromItem(item: Record<string, unknown>): UiTool
     status: typeof item.status === "string" ? item.status : undefined,
     aggregatedOutput: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : null,
     exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
-    durationMs: typeof item.durationMs === "number" ? item.durationMs : null
+    durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
+    commandExplanation: typeof item.commandExplanation === "string" ? item.commandExplanation : undefined
   };
 }
 

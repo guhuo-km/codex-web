@@ -9,6 +9,10 @@ export interface GenerateTitleInput {
   thread: unknown;
 }
 
+export interface ExplainCommandInput {
+  command: string;
+}
+
 export class TitleGenerationService {
   private readonly fetchFn: typeof fetch;
 
@@ -31,6 +35,11 @@ export class TitleGenerationService {
   async generateTitle(input: GenerateTitleInput): Promise<string> {
     const settings = await this.store.read();
     return this.generateTitleWithSettings(input.thread, settings);
+  }
+
+  async explainCommand(input: ExplainCommandInput): Promise<string> {
+    const settings = await this.store.read();
+    return this.explainCommandWithSettings(input.command, settings);
   }
 
   async generateTitleWithSettings(thread: unknown, settings: TitleGenerationSettings): Promise<string> {
@@ -87,6 +96,61 @@ export class TitleGenerationService {
     if (!title) throw new AppError("Title generation returned an empty title", "TITLE_GENERATION_EMPTY_RESULT", 502);
     return title;
   }
+
+  async explainCommandWithSettings(command: string, settings: TitleGenerationSettings): Promise<string> {
+    if (!settings.enabled) throw new AppError("AI assist is disabled", "AI_ASSIST_DISABLED", 400);
+    if (!settings.apiKey) throw new AppError("AI assist API key is missing", "AI_ASSIST_KEY_MISSING", 400);
+    if (!settings.model.trim()) throw new AppError("AI assist model is missing", "AI_ASSIST_MODEL_MISSING", 400);
+
+    const normalizedCommand = command.trim();
+    if (!normalizedCommand) throw new AppError("Command is required", "AI_ASSIST_EMPTY_COMMAND", 400);
+
+    const url = normalizeChatCompletionsUrl(settings.apiBaseUrl);
+    const controller = AbortSignal.timeout(settings.timeoutMs);
+    const response = await this.fetchFn(url, {
+      method: "POST",
+      signal: controller,
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.1,
+        max_tokens: 96,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "你解释 shell、PowerShell、bash 等命令的实际行为。",
+              "只解释真正执行的核心动作，会读取、列出、写入、启动或删除什么。",
+              "如果命令通过 pwsh、powershell、bash、cmd 等外层 shell 启动器包了一层，忽略外层 shell 启动器，不要说“启动 PowerShell”。",
+              "不要推测 Agent 的意图，不要结合未知上下文，不要做安全或风险结论。",
+              "别废话。用中文输出一条短句，最多 45 个汉字。不要 Markdown，不要项目符号，不要加标题。"
+            ].join("\n")
+          },
+          {
+            role: "user",
+            content: `命令：\n${truncateText(normalizedCommand, 4000)}`
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new AppError(
+        `AI assist request failed with status ${response.status}${body ? `: ${body.slice(0, 240)}` : ""}`,
+        "AI_ASSIST_REQUEST_FAILED",
+        502
+      );
+    }
+
+    const payload = await response.json().catch(() => null);
+    const explanation = cleanCommandExplanation(extractResponseText(payload));
+    if (!explanation) throw new AppError("AI assist returned an empty explanation", "AI_ASSIST_EMPTY_RESULT", 502);
+    return explanation;
+  }
 }
 
 function normalizeChatCompletionsUrl(input: string): string {
@@ -119,6 +183,16 @@ function cleanTitle(input: string): string {
     .trim();
   if (!normalized) return "";
   return normalized.length > 40 ? normalized.slice(0, 40).trim() : normalized;
+}
+
+function cleanCommandExplanation(input: string): string {
+  const normalized = input
+    .replace(/^\s*[-*•\d.)\s`"'“”‘’]+/, "")
+    .replace(/[\s`"'“”‘’]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  return normalized.length > 120 ? normalized.slice(0, 120).trim() : normalized;
 }
 
 function buildConversationContext(thread: unknown): string {

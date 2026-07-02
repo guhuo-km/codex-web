@@ -2,7 +2,7 @@ import { Check, ChevronDown, FileText, Gauge, LoaderCircle, Maximize2, Minimize2
 import { useEffect, useId, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { api } from "../api";
 import { createClientId } from "../id";
-import type { CapabilityPayload, ComposerCommandMode, ModelRecord, PluginCapability, ReasoningEffort, SendBehavior, SkillCapability, UploadedAttachment, WorkMode } from "../types";
+import type { CapabilityPayload, ComposerCommandMode, ModelRecord, PluginCapability, QueuedSteerMessage, ReasoningEffort, SendBehavior, SkillCapability, ThreadGoal, UploadedAttachment, WorkMode } from "../types";
 import { clipboardImageFiles } from "./composer-clipboard";
 import { submitComposerMessage } from "./composer-submit";
 
@@ -20,9 +20,12 @@ interface ComposerProps {
   attachments: UploadedAttachment[];
   commandMode: ComposerCommandMode | null;
   sendBehavior: SendBehavior;
+  goal?: ThreadGoal | null;
+  pendingSteers?: QueuedSteerMessage[];
   onTextChange: (text: string) => void;
   onAttachmentsChange: (attachments: UploadedAttachment[]) => void;
   onCommandModeChange: (mode: ComposerCommandMode | null) => void;
+  onRemovePendingSteer?: (id: string) => void;
   onRunCompact: () => void;
   onRunInit: () => void;
   onSelectProject: (cwd: string) => void;
@@ -59,13 +62,11 @@ const slashCommands: Array<{
 }> = [
   { id: "compact", label: "/compact", description: "压缩当前会话上下文", immediate: true },
   { id: "init", label: "/init", description: "让 Codex 生成 AGENTS.md", immediate: true },
-  { id: "plan", label: "/plan", description: "下一次发送使用计划模式" },
-  { id: "goal", label: "/goal", description: "将输入内容设为当前目标" }
+  { id: "plan", label: "/plan", description: "下一次发送使用计划模式" }
 ];
 
 const commandModeLabels: Record<ComposerCommandMode, string> = {
-  plan: "Plan",
-  goal: "Goal"
+  plan: "Plan"
 };
 
 export function Composer({
@@ -82,9 +83,12 @@ export function Composer({
   attachments,
   commandMode,
   sendBehavior,
+  goal,
+  pendingSteers = [],
   onTextChange,
   onAttachmentsChange,
   onCommandModeChange,
+  onRemovePendingSteer,
   onRunCompact,
   onRunInit,
   onSelectProject,
@@ -316,7 +320,9 @@ export function Composer({
             </span>
           </div>
         ) : null}
+        <PendingSteerQueue items={pendingSteers} onRemove={onRemovePendingSteer} />
         <div className={`composer-editor-shell ${editorExpanded ? "expanded" : ""}`}>
+          {goal ? <GoalStatusPill goal={goal} /> : null}
           {expandButton}
           <textarea
             id={textareaId}
@@ -324,7 +330,7 @@ export function Composer({
             className={editorExpanded ? "composer-expanded-textarea" : ""}
             value={draftText}
             disabled={disabled}
-            placeholder={disabled ? "请先选择项目" : commandMode === "goal" ? "输入当前目标..." : isDraft ? "请告诉 Codex 需要构建、修改或检查什么..." : "输入消息..."}
+            placeholder={disabled ? "请先选择项目" : isDraft ? "请告诉 Codex 需要构建、修改或检查什么..." : "输入消息..."}
             onChange={(event) => setDraftText(event.target.value)}
             onPaste={handlePaste}
             onKeyDown={(event) => {
@@ -519,6 +525,48 @@ export function Composer({
 }
 
 export const composerUsesLocalDraftText = true;
+
+function GoalStatusPill({ goal }: { goal: ThreadGoal }) {
+  const { tone, label } = goalStatusView(goal.status);
+  return (
+    <div className={`composer-goal-status ${tone}`} title={goal.objective}>
+      <span aria-hidden="true" />
+      <strong>{label}</strong>
+    </div>
+  );
+}
+
+function PendingSteerQueue({ items, onRemove }: { items: QueuedSteerMessage[]; onRemove?: (id: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <div className="composer-steer-queue">
+      {items.map((item) => (
+        <div className={`composer-steer-item ${item.status}`} key={item.id}>
+          <span>{item.text}</span>
+          <small>{steerStatusLabel(item.status)}</small>
+          {item.status === "queued" || item.status === "failed" ? (
+            <button type="button" onClick={() => onRemove?.(item.id)} aria-label="取消引导消息">
+              <X size={12} />
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function steerStatusLabel(status: QueuedSteerMessage["status"]): string {
+  if (status === "sent") return "已追加";
+  if (status === "submitted") return "已提交，等待追加";
+  if (status === "failed") return "追加失败";
+  return "待发送";
+}
+
+function goalStatusView(status: ThreadGoal["status"]): { tone: "active" | "paused" | "blocked"; label: string } {
+  if (status === "active") return { tone: "active", label: "目标进行中" };
+  if (status === "paused") return { tone: "paused", label: "目标已暂停" };
+  return { tone: "blocked", label: "目标有阻碍" };
+}
 
 function shouldSubmitFromEnter(event: React.KeyboardEvent<HTMLTextAreaElement>, sendBehavior: SendBehavior): boolean {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;

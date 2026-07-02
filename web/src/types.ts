@@ -75,7 +75,21 @@ export type UiAssistantPart =
   | { type: "text"; id: string; text: string }
   | { type: "tool"; id: string; toolCall: UiToolCall }
   | { type: "reasoning"; id: string; text: string; summary?: boolean }
-  | { type: "steer"; id: string; text: string; status: "queued" | "sent" | "failed" };
+  | { type: "agentEvent"; id: string; event: UiAgentEvent }
+  | { type: "steer"; id: string; text: string; status: SteerMessageStatus };
+
+export type UiAgentEventKind = "status" | "warning" | "error";
+export type UiAgentEventTone = "muted" | "info" | "warning" | "danger";
+
+export interface UiAgentEvent {
+  kind: UiAgentEventKind;
+  title: string;
+  message?: string;
+  tone: UiAgentEventTone;
+  details?: unknown;
+  createdAt?: number;
+  eventType?: string;
+}
 
 export interface UiToolCall {
   id: string;
@@ -93,6 +107,7 @@ export interface UiToolCall {
   aggregatedOutput?: string | null;
   exitCode?: number | null;
   durationMs?: number | null;
+  commandExplanation?: string;
 }
 
 export interface UiFileChange {
@@ -168,15 +183,29 @@ export interface ModelListResponse {
 
 export type WorkMode = "default" | "auto-review" | "full-access" | "yolo";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type ComposerCommandMode = "plan" | "goal";
+export type ComposerCommandMode = "plan";
 export type SendBehavior = "enter" | "shiftEnter";
 export type ToolGroupCollapseMode = "alwaysCollapsed" | "alwaysExpanded" | "collapseAfterComplete";
+export type ThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+
+export interface ThreadGoal {
+  threadId: string;
+  objective: string;
+  status: ThreadGoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface QueuedSteerMessage {
   id: string;
   text: string;
-  status: "queued" | "sent" | "failed";
+  status: SteerMessageStatus;
 }
+
+export type SteerMessageStatus = "queued" | "submitted" | "sent" | "failed";
 
 export interface PendingCompactMessage {
   id: string;

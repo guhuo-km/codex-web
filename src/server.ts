@@ -12,11 +12,15 @@ import { createRoutes, type BridgeLike } from "./http/routes.js";
 import { NotificationCenter } from "./notifications/notification-center.js";
 import { TitleGenerationService } from "./title-generation/title-generation-service.js";
 import { TitleGenerationStore } from "./title-generation/title-generation-store.js";
+import { ToolExplanationService } from "./tool-explanations/tool-explanation-service.js";
+import { ToolExplanationStore } from "./tool-explanations/tool-explanation-store.js";
+import { attachToolExplanationWorker } from "./tool-explanations/tool-explanation-worker.js";
 import type { ProjectStore } from "./projects/project-store.js";
 import type { ThemeStore } from "./themes/theme-store.js";
 import type { ThreadMetadataStore } from "./threads/thread-metadata-store.js";
 import type { UserPreferencesStore } from "./preferences/user-preferences-store.js";
 import { RuntimeDiagnostics } from "./runtime/diagnostics.js";
+import { TerminalManager } from "./terminal/terminal-manager.js";
 
 export interface CreateAppServerOptions {
   config: AppConfig;
@@ -46,10 +50,13 @@ export function createAppServer(options: CreateAppServerOptions): {
   const auth = new LocalAuth(options.config);
   const notifications = new NotificationCenter(options.config.dataDir);
   const titleGeneration = new TitleGenerationService(new TitleGenerationStore(options.config.dataDir));
+  const toolExplanations = new ToolExplanationService(new ToolExplanationStore(options.config.dataDir), titleGeneration);
+  const terminals = new TerminalManager();
   notifications.attach(options.events);
+  attachToolExplanationWorker(options.events, toolExplanations);
   app.use(auth.router());
   app.use(auth.middleware());
-  app.use(createRoutes({ ...options, notifications, titleGeneration, diagnostics }));
+  app.use(createRoutes({ ...options, notifications, titleGeneration, toolExplanations, diagnostics }));
   const webRoot = resolveWebRoot();
   if (webRoot) {
     app.use(express.static(webRoot));
@@ -65,7 +72,7 @@ export function createAppServer(options: CreateAppServerOptions): {
   return {
     app,
     attachWebSocket: (server) => {
-      attachBrowserWebSocket(server, options.events, options.bridge, { auth, diagnostics });
+      attachBrowserWebSocket(server, options.events, options.bridge, { auth, diagnostics, terminals });
     }
   };
 }
